@@ -1,68 +1,44 @@
-const path = require("path");
-const express = require("express");
-const cors = require("cors");
-require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
-require("dotenv").config();
+const express = require('express');
+const cors = require('cors');
+const config = require('./config/env');
 
-// Environment configuration validation
-const requiredEnvVars = ["PORT", "CORS_ORIGIN"];
-const optionalEnvVars = ["GEMINI_API_KEY", "OPENAI_API_KEY", "WORKSPACE_ROOT"];
+// Middlewares
+const requestId = require('./middleware/requestId');
+const notFound = require('./middleware/notFound');
+const errorHandler = require('./middleware/errorHandler');
 
-function validateEnv() {
-  console.log("[VULNEX] Validating environment configuration...");
-  for (const varName of requiredEnvVars) {
-    if (!process.env[varName]) {
-      console.warn(`[VULNEX] Warning: Environment variable ${varName} is not set. Using defaults.`);
-    }
-  }
-
-  if (!process.env.GEMINI_API_KEY && !process.env.OPENAI_API_KEY) {
-    console.info("[VULNEX] Info: No AI API keys detected. Operating in local heuristic analysis mode.");
-  } else {
-    console.info("[VULNEX] Info: AI Provider API key configured.");
-  }
-}
-
-validateEnv();
+// Route modules
+const healthRoutes = require('./routes/health.routes');
+const repositoryRoutes = require('./routes/repository.routes');
+const scanRoutes = require('./routes/scan.routes');
+const findingRoutes = require('./routes/finding.routes');
 
 const app = express();
 
-// Middlewares
-app.use(cors({ origin: process.env.CORS_ORIGIN || "http://localhost:5173" }));
-app.use(express.json());
+// 1. Tracing & Request ID
+app.use(requestId);
 
-// Routes
-const repositoryRoutes = require("./routes/repository.routes");
-const scanRoutes = require("./routes/scan.routes");
-const findingRoutes = require("./routes/finding.routes");
+// 2. CORS configuration
+app.use(cors({
+  origin: config.corsOrigin,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Request-ID']
+}));
 
-app.use("/api/repositories", repositoryRoutes);
-app.use("/api/scans", scanRoutes);
-app.use("/api/findings", findingRoutes);
+// 3. Body parsers
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Health check endpoint
-app.get("/api/health", (req, res) => {
-  res.json({ success: true, message: "VULNEX Backend is running!" });
-});
+// 4. API Routes
+app.use('/api/health', healthRoutes);
+app.use('/api/repositories', repositoryRoutes);
+app.use('/api/scans', scanRoutes);
+app.use('/api/findings', findingRoutes);
 
-// Fallback 404 handler
-app.use((req, res) => {
-  res.status(404).json({ success: false, error: "API route not found" });
-});
+// 5. 404 Not Found Catch-All
+app.use(notFound);
 
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error("[VULNEX Error]:", err);
-  res.status(500).json({ success: false, error: err.message || "Internal server error" });
-});
-
-const PORT = process.env.PORT || 5001;
-
-// Only listen if executed directly
-if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-}
+// 6. Centralized Error Handler
+app.use(errorHandler);
 
 module.exports = app;
