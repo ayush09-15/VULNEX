@@ -219,7 +219,7 @@ describe('Bounded Source Inventory Service (Task 12)', () => {
           displayName: 'ssrf-repo',
           sourceUrl: 'https://192.168.1.1/exploit.git'
         }),
-        (err) => err.code === 'INVALID_INPUT' && err.statusCode === 400
+        (err) => (err.code === 'INVALID_INPUT' || err.code === 'INVALID_URL') && err.statusCode === 400
       );
     });
 

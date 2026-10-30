@@ -528,6 +528,107 @@ class ScanOrchestrator {
   }
 
   /**
+   * Cancel an in-flight scan
+   * @param {string} scanId
+   * @param {string} [reason='Scan cancelled by user']
+   * @returns {Object|null}
+   */
+  cancelScan(scanId, reason = 'Scan cancelled by user') {
+    const scan = this.getScan(scanId);
+    if (!scan) return null;
+
+    if (isTerminalState(scan.status)) {
+      const { InvalidStateTransitionError } = require('./scanStateMachine');
+      throw new InvalidStateTransitionError(
+        scan.status,
+        SCAN_STATES.CANCELLED,
+        `Cannot cancel scan in terminal state '${scan.status}'`
+      );
+    }
+
+    scan.status = SCAN_STATES.CANCELLED;
+    scan.stage = SCAN_STATES.CANCELLED;
+    scan.completedAt = new Date().toISOString();
+
+    recordEvent(scan, SCAN_STATES.CANCELLED, 'SUCCESS', reason);
+    return scan;
+  }
+
+  /**
+   * Delete a scan and its associated findings
+   * @param {string} scanId
+   * @returns {boolean}
+   */
+  deleteScan(scanId) {
+    const exists = scansStore.has(scanId);
+    if (exists) {
+      scansStore.delete(scanId);
+      for (const [fId, finding] of findingsStore.entries()) {
+        if (finding.scanId === scanId) {
+          findingsStore.delete(fId);
+        }
+      }
+    }
+    return exists;
+  }
+
+  /**
+   * Get an individual finding by ID
+   * @param {string} findingId
+   * @returns {Object|null}
+   */
+  getFindingById(findingId) {
+    return findingsStore.get(findingId) || null;
+  }
+
+  /**
+   * List all findings with optional filtering
+   * @param {Object} [filters={}]
+   * @returns {Array<Object>}
+   */
+  getAllFindings(filters = {}) {
+    let findings = Array.from(findingsStore.values());
+
+    if (filters.scanId) {
+      findings = findings.filter((f) => f.scanId === filters.scanId);
+    }
+    if (filters.severity) {
+      findings = findings.filter((f) => f.severity.toUpperCase() === filters.severity.toUpperCase());
+    }
+    if (filters.category) {
+      findings = findings.filter((f) => f.category.toUpperCase() === filters.category.toUpperCase());
+    }
+    if (filters.scanner) {
+      findings = findings.filter((f) => f.scanner.toLowerCase() === filters.scanner.toLowerCase());
+    }
+    if (filters.status) {
+      findings = findings.filter((f) => f.status.toUpperCase() === filters.status.toUpperCase());
+    }
+
+    return findings;
+  }
+
+  /**
+   * Update an existing finding (e.g. status transition, AI analysis, patch link)
+   * @param {string} findingId
+   * @param {Object} updates
+   * @returns {Object|null}
+   */
+  updateFinding(findingId, updates = {}) {
+    const finding = findingsStore.get(findingId);
+    if (!finding) return null;
+
+    const updated = {
+      ...finding,
+      ...updates,
+      updatedAt: new Date().toISOString()
+    };
+
+    findingsStore.set(findingId, updated);
+    return updated;
+  }
+
+  /**
    * Clear stores (test helper)
    */
   clearStores() {

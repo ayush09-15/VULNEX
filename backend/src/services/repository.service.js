@@ -1,38 +1,235 @@
 const crypto = require('crypto');
+const { URL } = require('url');
 const inventoryService = require('./inventory.service');
-const { validateRegisterRepository } = require('../validators/canonical.schema');
+const zipService = require('./zip.service');
 
 /**
  * ============================================================================
  * VULNEX Repository Service
- * Coordinates repository intake records, metadata, and bounded inventory scanning.
+ * Coordinates repository intake records, GitHub URL validation, ZIP archives,
+ * and bounded inventory scanning.
  * ============================================================================
  */
 
-// Repository memory store (isolated behind service interface)
+// In-memory repository persistence store
 const repositoriesStore = new Map();
 
-// Initialize default sample repository if store empty
-const defaultRepoId = 'repo_default_vulnex';
-repositoriesStore.set(defaultRepoId, {
-  id: defaultRepoId,
-  sourceType: 'GITHUB',
-  displayName: 'VULNEX Sample Repository',
-  sanitizedSourceUrl: 'https://github.com/vulnex/sample-repo',
+// Default fixture repository
+const defaultFixtureId = 'repo_fixture_01';
+repositoriesStore.set(defaultFixtureId, {
+  id: defaultFixtureId,
+  sourceType: 'LOCAL_FIXTURE',
+  displayName: 'intentionally-vulnerable-node-app',
+  sanitizedSourceUrl: null,
   defaultRef: 'main',
-  createdAt: new Date().toISOString()
+  createdAt: '2026-10-31T03:00:00.000Z',
+  ownerId: null
 });
 
 /**
- * List all registered repositories
- * @returns {Array<Object>}
+ * Validates and sanitizes a GitHub repository URL
+ * Mitigates SSRF, credential leakage, open redirects, and protocol hijacking.
+ * 
+ * @param {string} rawUrl - Untrusted input URL
+ * @returns {{ isValid: boolean, sanitizedUrl: string, owner: string, repo: string }}
+ * @throws {Error} Machine-readable error code on failure
  */
-function listRepositories() {
-  return Array.from(repositoriesStore.values());
+function validateGitHubUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    const err = new Error('Repository URL is required and must be a string.');
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const trimmed = rawUrl.trim();
+
+  // 1. Enforce strict HTTPS scheme
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(trimmed);
+  } catch {
+    const err = new Error('Malformed URL format.');
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (parsedUrl.protocol !== 'https:') {
+    const err = new Error(`Protocol "${parsedUrl.protocol}" is not supported. Only secure HTTPS URLs are permitted.`);
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // 2. Reject embedded user credentials (e.g., https://user:pass@github.com)
+  if (parsedUrl.username || parsedUrl.password) {
+    const err = new Error('Embedding user credentials or authentication tokens in repository URLs is prohibited.');
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // 3. Port check (only standard HTTPS port 443 allowed)
+  if (parsedUrl.port && parsedUrl.port !== '443') {
+    const err = new Error(`Non-standard port "${parsedUrl.port}" is not permitted for GitHub repository URLs.`);
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // 4. Host verification & SSRF protection
+  const hostname = parsedUrl.hostname.toLowerCase();
+
+  // Prohibit local / loopback / private IP ranges
+  const privateIpPatterns = [
+    /^localhost$/i,
+    /^127\./,
+    /^0\./,
+    /^::1$/,
+    /^10\./,
+    /^192\.168\./,
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
+    /^169\.254\./ // AWS / Cloud metadata address
+  ];
+
+  for (const pattern of privateIpPatterns) {
+    if (pattern.test(hostname)) {
+      const err = new Error('Prohibited IP or private host address detected. Access blocked by SSRF policy.');
+      err.code = 'INVALID_URL';
+      err.statusCode = 400;
+      throw err;
+    }
+  }
+
+  // Strictly allow only verified GitHub host domains
+  const allowedHosts = ['github.com', 'www.github.com'];
+  if (!allowedHosts.includes(hostname)) {
+    const err = new Error(`Host "${hostname}" is not a supported Git host. Only github.com is currently allowed.`);
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // 5. Path extraction and validation: /:owner/:repo
+  const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
+
+  if (pathParts.length !== 2) {
+    const err = new Error('URL must follow the canonical path format "https://github.com/:owner/:repo".');
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const [rawOwner, rawRepo] = pathParts;
+  const gitIdentifierRegex = /^[a-zA-Z0-9_.-]{1,100}$/;
+
+  if (!gitIdentifierRegex.test(rawOwner) || rawOwner === '.' || rawOwner === '..') {
+    const err = new Error(`Invalid GitHub organization/user identifier: "${rawOwner}".`);
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  if (!gitIdentifierRegex.test(rawRepo) || rawRepo === '.' || rawRepo === '..') {
+    const err = new Error(`Invalid GitHub repository identifier: "${rawRepo}".`);
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Strip trailing .git suffix if present
+  const cleanRepo = rawRepo.endsWith('.git') ? rawRepo.slice(0, -4) : rawRepo;
+
+  if (!cleanRepo || cleanRepo === '.' || cleanRepo === '..') {
+    const err = new Error('Invalid repository identifier after stripping .git suffix.');
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const sanitizedUrl = `https://github.com/${rawOwner}/${cleanRepo}`;
+
+  return {
+    isValid: true,
+    sanitizedUrl,
+    owner: rawOwner,
+    repo: cleanRepo
+  };
 }
 
 /**
- * Get repository by ID
+ * Register a new repository
+ * 
+ * @param {Object} params
+ * @param {string} params.sourceType - 'GITHUB' | 'ZIP_UPLOAD'
+ * @param {string} [params.displayName]
+ * @param {string} [params.sourceUrl]
+ * @param {string} [params.defaultRef='main']
+ * @param {string} [params.ownerId=null]
+ * @returns {Object} Canonical Repository entity
+ */
+function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = 'main', ownerId = null }) {
+  if (!sourceType || !['GITHUB', 'ZIP_UPLOAD'].includes(sourceType)) {
+    const err = new Error('Invalid sourceType. Must be either GITHUB or ZIP_UPLOAD.');
+    err.code = 'INVALID_INPUT';
+    err.statusCode = 400;
+    throw err;
+  }
+
+  let sanitizedSourceUrl = null;
+  let finalDisplayName = displayName?.trim() || null;
+
+  if (sourceType === 'GITHUB') {
+    if (!sourceUrl) {
+      const err = new Error('sourceUrl is required when sourceType is GITHUB.');
+      err.code = 'INVALID_INPUT';
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const validated = validateGitHubUrl(sourceUrl);
+    sanitizedSourceUrl = validated.sanitizedUrl;
+    if (!finalDisplayName) {
+      finalDisplayName = validated.repo;
+    }
+  } else if (sourceType === 'ZIP_UPLOAD') {
+    if (!finalDisplayName) {
+      finalDisplayName = `upload-${Date.now()}`;
+    }
+  }
+
+  finalDisplayName = finalDisplayName ? finalDisplayName.replace(/[/\\~]/g, '').trim() : 'unnamed-repo';
+
+  const id = `repo_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const record = {
+    id,
+    sourceType,
+    displayName: finalDisplayName,
+    sanitizedSourceUrl,
+    defaultRef: defaultRef || 'main',
+    createdAt: new Date().toISOString(),
+    ownerId: ownerId || null
+  };
+
+  repositoriesStore.set(id, record);
+  return record;
+}
+
+/**
+ * Ingest and validate a ZIP archive
+ * @param {Buffer} zipBuffer
+ * @param {Object} options
+ * @returns {Object}
+ */
+function ingestZipArchive(zipBuffer, options = {}) {
+  const result = zipService.ingestZipArchive(zipBuffer, options);
+  repositoriesStore.set(result.repository.id, result.repository);
+  return result.repository;
+}
+
+/**
+ * Retrieve repository by ID
  * @param {string} id
  * @returns {Object|null}
  */
@@ -41,34 +238,33 @@ function getRepositoryById(id) {
 }
 
 /**
- * Register a new repository intake
- * @param {Object} input
- * @returns {Object}
+ * List repositories with optional pagination
+ * Supports both listRepositories() and listRepositories({ page, limit })
+ * @param {Object} [options={}]
+ * @returns {{ items: Array, total: number, page: number, limit: number, some: Function }}
  */
-function registerRepository(input) {
-  const validation = validateRegisterRepository(input);
-  if (!validation.success) {
-    const err = new Error(validation.error.issues[0]?.message || 'Invalid repository registration input');
-    err.code = 'INVALID_INPUT';
-    err.statusCode = 400;
-    err.details = validation.error.issues;
-    throw err;
-  }
+function listRepositories(options = {}) {
+  const p = Math.max(1, parseInt(options.page, 10) || 1);
+  const l = Math.max(1, Math.min(100, parseInt(options.limit, 10) || (options.limit === undefined ? 20 : 20)));
 
-  const validData = validation.data;
-  const id = `repo_${crypto.randomBytes(6).toString('hex')}`;
+  const all = Array.from(repositoriesStore.values());
+  const startIndex = (p - 1) * l;
+  const items = all.slice(startIndex, startIndex + l);
 
-  const repository = {
-    id,
-    sourceType: validData.sourceType,
-    displayName: validData.displayName,
-    sanitizedSourceUrl: validData.sourceUrl || null,
-    defaultRef: validData.defaultRef || 'main',
-    createdAt: new Date().toISOString()
+  const result = {
+    items,
+    total: all.length,
+    page: p,
+    limit: l,
+    [Symbol.iterator]: function* () { yield* items; },
+    some: (fn) => items.some(fn),
+    filter: (fn) => items.filter(fn),
+    map: (fn) => items.map(fn),
+    forEach: (fn) => items.forEach(fn),
+    length: items.length
   };
 
-  repositoriesStore.set(id, repository);
-  return repository;
+  return result;
 }
 
 /**
@@ -81,19 +277,32 @@ function deleteRepository(id) {
 }
 
 /**
- * Clear repositories (testing helper)
+ * Reset store (testing helper)
  */
-function clearRepositories() {
+function _resetStore() {
   repositoriesStore.clear();
+  repositoriesStore.set(defaultFixtureId, {
+    id: defaultFixtureId,
+    sourceType: 'LOCAL_FIXTURE',
+    displayName: 'intentionally-vulnerable-node-app',
+    sanitizedSourceUrl: null,
+    defaultRef: 'main',
+    createdAt: '2026-10-31T03:00:00.000Z',
+    ownerId: null
+  });
 }
 
+const clearRepositories = _resetStore;
+
 module.exports = {
-  listRepositories,
-  getRepositoryById,
+  validateGitHubUrl,
   registerRepository,
+  ingestZipArchive,
+  getRepositoryById,
+  listRepositories,
   deleteRepository,
+  _resetStore,
   clearRepositories,
-  // Delegate bounded source inventory methods
   scanWorkspace: inventoryService.scanWorkspace,
   getFileExcerpt: inventoryService.getFileExcerpt
 };
