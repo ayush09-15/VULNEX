@@ -244,3 +244,4 @@ Test coverage includes:
 3. **No Script Execution:** Semgrep is executed in pure static analysis mode (`--config auto --json`). Repository scripts (`npm postinstall`, build scripts) are never executed.
 4. **Environment Isolation:** Child processes only receive an essential whitelist of environment variables (`PATH`, `HOME`, `TMPDIR`, `LANG`). Production API credentials (`GEMINI_API_KEY`, `DATABASE_URL`) are never passed to the scanner subprocess.
 5. **Memory Protection:** Stdout and stderr streams are capped at 25MB to prevent memory exhaustion from oversized outputs.
+

@@ -374,3 +374,4 @@ module.exports = {
   semgrepService: semgrepServiceInstance,
   scanWithSemgrep
 };
+

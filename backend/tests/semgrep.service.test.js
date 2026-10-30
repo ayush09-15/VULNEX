@@ -121,3 +121,4 @@ describe('Semgrep Service & Process Wrapper', () => {
     assert.strictEqual(result.provenance.status, result.status);
   });
 });
+

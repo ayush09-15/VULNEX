@@ -63,3 +63,4 @@ class SemgrepProvenance {
 }
 
 module.exports = new SemgrepProvenance();
+

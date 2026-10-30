@@ -302,3 +302,4 @@ class ScannerService {
 }
 
 module.exports = new ScannerService();
+

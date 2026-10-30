@@ -148,3 +148,4 @@ module.exports = {
   validateNormalizedFindings,
   validateProvenance
 };
+

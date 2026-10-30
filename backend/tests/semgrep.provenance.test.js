@@ -97,3 +97,4 @@ describe('Semgrep Provenance Generator', () => {
     assert.strictEqual(record.version, null);
   });
 });
+
