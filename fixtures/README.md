@@ -56,3 +56,4 @@ To scan this fixture with the VULNEX Semgrep detection engine:
 ```bash
 semgrep scan --config auto --json fixtures/
 ```
+
