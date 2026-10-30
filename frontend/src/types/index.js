@@ -26,12 +26,34 @@ export const FINDING_STATUSES = {
   INCONCLUSIVE: 'INCONCLUSIVE',
 };
 
-export const VERIFICATION_STATUSES = {
+export const PATCH_STATUSES = {
+  GENERATED: 'GENERATED',
+  VALIDATED: 'VALIDATED',
+  APPLIED_TO_TEMP: 'APPLIED_TO_TEMP',
+  TESTING: 'TESTING',
   VERIFIED: 'VERIFIED',
+  FAILED: 'FAILED',
+  REJECTED: 'REJECTED',
+  INCONCLUSIVE: 'INCONCLUSIVE',
+};
+
+export const VERIFICATION_STATUSES = {
+  PASSED: 'PASSED',
   FAILED: 'FAILED',
   INCONCLUSIVE: 'INCONCLUSIVE',
   NOT_RUN: 'NOT_RUN',
   PARTIAL: 'PARTIAL',
+};
+
+export const AI_ASSESSMENTS = {
+  LIKELY_TRUE: 'LIKELY_TRUE',
+  UNCERTAIN: 'UNCERTAIN',
+  LIKELY_FALSE: 'LIKELY_FALSE',
+};
+
+export const SOURCE_TYPES = {
+  GITHUB: 'GITHUB',
+  ZIP_UPLOAD: 'ZIP_UPLOAD',
 };
 
 export const SEVERITY_LEVELS = {
@@ -76,7 +98,9 @@ export const VULNERABILITY_CATEGORIES = {
   SQL_INJECTION: 'SQL Injection',
   XSS: 'Cross-Site Scripting (XSS)',
   SECRETS: 'Hard-coded Secret',
+  HARDCODED_SECRET: 'Hard-coded Secret',
   VULNERABLE_DEPENDENCY: 'Vulnerable Dependency',
   COMMAND_INJECTION: 'Command Injection',
+  PATH_TRAVERSAL: 'Path Traversal',
   OTHER: 'Other Security Flaw',
 };
