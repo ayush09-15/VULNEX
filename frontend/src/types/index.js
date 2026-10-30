@@ -51,6 +51,13 @@ export const AI_ASSESSMENTS = {
   LIKELY_FALSE: 'LIKELY_FALSE',
 };
 
+export const AI_CONFIDENCE = {
+  LOW: 'LOW',
+  MEDIUM: 'MEDIUM',
+  HIGH: 'HIGH',
+};
+
+
 export const SOURCE_TYPES = {
   GITHUB: 'GITHUB',
   ZIP_UPLOAD: 'ZIP_UPLOAD',

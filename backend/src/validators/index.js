@@ -5,8 +5,14 @@
 
 const canonical = require('./canonical.schema');
 const semgrep = require('./semgrep.schema');
+const investigation = require('./investigation.schema');
 
 module.exports = {
   ...canonical,
-  semgrep
+  semgrep,
+  investigation,
+  // Direct helpers for investigation
+  parseAndValidateAIInvestigation: investigation.parseAndValidateAIInvestigation,
+  createFallbackInvestigation: investigation.createFallbackInvestigation,
+  extractJsonString: investigation.extractJsonString
 };
