@@ -268,15 +268,32 @@ class ScannerService {
   }
 
   getFindings(scanId) {
-    return Array.from(findingsStore.values()).filter(f => f.scanId === scanId);
+    const fromScanner = Array.from(findingsStore.values()).filter(f => f.scanId === scanId);
+    const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
+    const fromOrch = scanOrchestrator.getScanFindings(scanId);
+    const map = new Map();
+    for (const f of [...fromScanner, ...fromOrch]) {
+      map.set(f.id, f);
+    }
+    return Array.from(map.values());
   }
 
   getAllFindings() {
-    return Array.from(findingsStore.values());
+    const fromScanner = Array.from(findingsStore.values());
+    const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
+    const fromOrch = scanOrchestrator.getAllFindings();
+    const map = new Map();
+    for (const f of [...fromScanner, ...fromOrch]) {
+      map.set(f.id, f);
+    }
+    return Array.from(map.values());
   }
 
   getFindingById(id) {
-    return findingsStore.get(id) || null;
+    const fromScanner = findingsStore.get(id);
+    if (fromScanner) return fromScanner;
+    const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
+    return scanOrchestrator.getFindingById(id);
   }
 
   updateFinding(id, updates) {
