@@ -8,6 +8,8 @@ dotenv.config();
 const port = parseInt(process.env.PORT || '5001', 10);
 const nodeEnv = process.env.NODE_ENV || 'development';
 const corsOrigin = process.env.CORS_ORIGIN || 'http://localhost:5173';
+const maxUploadMb = parseInt(process.env.MAX_UPLOAD_MB || '25', 10);
+const workspaceRoot = process.env.WORKSPACE_ROOT || path.resolve(__dirname, '../../.workspaces');
 
 // Validate environment configuration
 function validateConfig() {
@@ -22,10 +24,11 @@ const config = {
   port: isNaN(port) ? 5001 : port,
   nodeEnv,
   corsOrigin,
+  maxUploadMb: isNaN(maxUploadMb) ? 25 : maxUploadMb,
+  workspaceRoot,
   isProduction: nodeEnv === 'production',
   isDevelopment: nodeEnv === 'development',
   isTest: nodeEnv === 'test'
 };
 
 module.exports = config;
-
