@@ -1,72 +1,78 @@
 const express = require('express');
 const router = express.Router();
-const crypto = require('crypto');
+const apiResponse = require('../utils/apiResponse');
+const repositoryService = require('../services/repository.service');
 
-// In-memory repositories store
-const repositoriesStore = new Map();
-
-// Sample initial repository
-const defaultRepoId = 'repo-default';
-repositoriesStore.set(defaultRepoId, {
-  id: defaultRepoId,
-  name: 'VULNEX Sample Repository',
-  url: 'https://github.com/vulnex/sample-repo',
-  path: './',
-  branch: 'main',
-  status: 'ACTIVE',
-  createdAt: new Date().toISOString()
-});
-
-// GET /api/repositories - List all repositories
+/**
+ * GET /api/repositories
+ * Lists all registered repositories with optional pagination
+ */
 router.get('/', (req, res) => {
-  const repositories = Array.from(repositoriesStore.values());
-  res.json({ success: true, data: repositories });
+  try {
+    const { page, limit } = req.query;
+    const result = repositoryService.listRepositories({ page, limit });
+    return apiResponse.success(res, result.items, 200);
+  } catch (err) {
+    return apiResponse.error(res, {
+      code: err.code || 'INTERNAL_SERVER_ERROR',
+      message: err.message
+    }, 500);
+  }
 });
 
-// POST /api/repositories - Register a repository
+/**
+ * POST /api/repositories
+ * Registers a new repository intake (GitHub URL or ZIP upload reference)
+ */
 router.post('/', (req, res) => {
-  const { name, url, path, branch = 'main' } = req.body;
+  try {
+    const { sourceType, displayName, sourceUrl, defaultRef } = req.body;
 
-  if (!name && !url && !path) {
-    return res.status(400).json({
-      success: false,
-      error: 'Repository name, url, or path is required.'
+    if (!sourceType) {
+      return apiResponse.error(res, {
+        code: 'INVALID_INPUT',
+        message: 'Missing required field: "sourceType" (GITHUB | ZIP_UPLOAD).'
+      }, 400);
+    }
+
+    const repo = repositoryService.registerRepository({
+      sourceType,
+      displayName,
+      sourceUrl,
+      defaultRef
     });
+
+    return apiResponse.success(res, repo, 201);
+  } catch (err) {
+    const statusCode = (err.code === 'INVALID_URL' || err.code === 'INVALID_INPUT') ? 400 : 500;
+    return apiResponse.error(res, {
+      code: err.code || 'BAD_REQUEST',
+      message: err.message
+    }, statusCode);
   }
-
-  const id = `repo-${crypto.randomBytes(4).toString('hex')}`;
-  const newRepo = {
-    id,
-    name: name || (url ? url.split('/').pop().replace('.git', '') : 'Local Repository'),
-    url: url || null,
-    path: path || './',
-    branch,
-    status: 'ACTIVE',
-    createdAt: new Date().toISOString()
-  };
-
-  repositoriesStore.set(id, newRepo);
-  res.status(201).json({ success: true, data: newRepo });
 });
 
-// GET /api/repositories/:id - Get repository details
+/**
+ * GET /api/repositories/:id
+ * Retrieves repository metadata and default ref by ID
+ */
 router.get('/:id', (req, res) => {
-  const repo = repositoriesStore.get(req.params.id);
-  if (!repo) {
-    return res.status(404).json({ success: false, error: 'Repository not found.' });
-  }
-  res.json({ success: true, data: repo });
-});
+  try {
+    const repo = repositoryService.getRepositoryById(req.params.id);
+    if (!repo) {
+      return apiResponse.error(res, {
+        code: 'RESOURCE_NOT_FOUND',
+        message: `Repository with ID "${req.params.id}" not found.`
+      }, 404);
+    }
 
-// DELETE /api/repositories/:id - Remove repository
-router.delete('/:id', (req, res) => {
-  const exists = repositoriesStore.has(req.params.id);
-  if (!exists) {
-    return res.status(404).json({ success: false, error: 'Repository not found.' });
+    return apiResponse.success(res, repo, 200);
+  } catch (err) {
+    return apiResponse.error(res, {
+      code: err.code || 'INTERNAL_SERVER_ERROR',
+      message: err.message
+    }, 500);
   }
-  repositoriesStore.delete(req.params.id);
-  res.json({ success: true, message: 'Repository removed successfully.' });
 });
 
 module.exports = router;
-
