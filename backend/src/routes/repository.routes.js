@@ -22,17 +22,26 @@ router.get('/', (req, res) => {
 
 /**
  * POST /api/repositories
- * Registers a new repository intake (GitHub URL or ZIP upload reference)
+ * Registers a new repository intake (GitHub URL or ZIP upload)
  */
 router.post('/', (req, res) => {
   try {
-    const { sourceType, displayName, sourceUrl, defaultRef } = req.body;
+    const { sourceType, displayName, sourceUrl, defaultRef, zipBase64 } = req.body;
 
     if (!sourceType) {
       return apiResponse.error(res, {
         code: 'INVALID_INPUT',
         message: 'Missing required field: "sourceType" (GITHUB | ZIP_UPLOAD).'
       }, 400);
+    }
+
+    if (sourceType === 'ZIP_UPLOAD' && zipBase64) {
+      const zipBuffer = Buffer.from(zipBase64, 'base64');
+      const repo = repositoryService.ingestZipArchive(zipBuffer, {
+        displayName,
+        defaultRef
+      });
+      return apiResponse.success(res, repo, 201);
     }
 
     const repo = repositoryService.registerRepository({
@@ -44,7 +53,14 @@ router.post('/', (req, res) => {
 
     return apiResponse.success(res, repo, 201);
   } catch (err) {
-    const statusCode = (err.code === 'INVALID_URL' || err.code === 'INVALID_INPUT') ? 400 : 500;
+    const clientErrorCodes = [
+      'INVALID_URL',
+      'INVALID_INPUT',
+      'UNSUPPORTED_ARCHIVE',
+      'FILE_TOO_LARGE',
+      'RESOURCE_LIMIT_EXCEEDED'
+    ];
+    const statusCode = clientErrorCodes.includes(err.code) ? 400 : 500;
     return apiResponse.error(res, {
       code: err.code || 'BAD_REQUEST',
       message: err.message

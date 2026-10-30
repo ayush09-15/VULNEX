@@ -1,5 +1,8 @@
 const crypto = require('crypto');
+const path = require('path');
 const { URL } = require('url');
+const config = require('../config/env');
+const { validateZipArchive, extractZipArchive } = require('./zip.service');
 
 /**
  * In-memory repository persistence store
@@ -15,6 +18,7 @@ repositoriesStore.set(defaultFixtureId, {
   displayName: 'intentionally-vulnerable-node-app',
   sanitizedSourceUrl: null,
   defaultRef: 'main',
+  workspacePath: path.resolve(__dirname, '../../../fixtures/intentionally-vulnerable-node-app'),
   createdAt: '2026-10-31T03:00:00.000Z',
   ownerId: null
 });
@@ -98,7 +102,6 @@ function validateGitHubUrl(rawUrl) {
   }
 
   // 5. Path extraction and validation: /:owner/:repo
-  // Normalization: clean leading/trailing slashes
   const pathParts = parsedUrl.pathname.split('/').filter(Boolean);
 
   if (pathParts.length !== 2) {
@@ -109,8 +112,7 @@ function validateGitHubUrl(rawUrl) {
 
   const [rawOwner, rawRepo] = pathParts;
 
-  // GitHub username and repo naming rules: alphanumeric, hyphens, underscores, dots
-  // Cannot be '.' or '..'
+  // GitHub username and repo naming rules
   const gitIdentifierRegex = /^[a-zA-Z0-9_.-]{1,100}$/;
 
   if (!gitIdentifierRegex.test(rawOwner) || rawOwner === '.' || rawOwner === '..') {
@@ -145,7 +147,7 @@ function validateGitHubUrl(rawUrl) {
 }
 
 /**
- * Register a new repository
+ * Register a new repository intake (URL or metadata)
  * 
  * @param {Object} params
  * @param {string} params.sourceType - 'GITHUB' | 'ZIP_UPLOAD'
@@ -153,11 +155,12 @@ function validateGitHubUrl(rawUrl) {
  * @param {string} [params.sourceUrl]
  * @param {string} [params.defaultRef='main']
  * @param {string} [params.ownerId=null]
+ * @param {string} [params.workspacePath=null]
  * @returns {Object} Canonical Repository entity
  */
-function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = 'main', ownerId = null }) {
-  if (!sourceType || !['GITHUB', 'ZIP_UPLOAD'].includes(sourceType)) {
-    const err = new Error('Invalid sourceType. Must be either GITHUB or ZIP_UPLOAD.');
+function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = 'main', ownerId = null, workspacePath = null }) {
+  if (!sourceType || !['GITHUB', 'ZIP_UPLOAD', 'LOCAL_FIXTURE'].includes(sourceType)) {
+    const err = new Error('Invalid sourceType. Must be GITHUB or ZIP_UPLOAD.');
     err.code = 'INVALID_INPUT';
     throw err;
   }
@@ -183,7 +186,6 @@ function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = '
     }
   }
 
-  // Clean and sanitize display name (no traversal or dangerous characters)
   finalDisplayName = finalDisplayName.replace(/[/\\~]/g, '').trim() || 'unnamed-repo';
 
   const id = `repo_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
@@ -193,12 +195,40 @@ function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = '
     displayName: finalDisplayName,
     sanitizedSourceUrl,
     defaultRef: defaultRef || 'main',
+    workspacePath: workspacePath || null,
     createdAt: new Date().toISOString(),
     ownerId: ownerId || null
   };
 
   repositoriesStore.set(id, record);
   return record;
+}
+
+/**
+ * Ingest and extract a ZIP archive into an isolated scan workspace
+ * 
+ * @param {Buffer} zipBuffer - Binary zip payload
+ * @param {Object} [params]
+ * @param {string} [params.displayName]
+ * @param {string} [params.defaultRef='main']
+ * @returns {Object} Canonical Repository record with isolated workspace
+ */
+function ingestZipArchive(zipBuffer, { displayName, defaultRef = 'main' } = {}) {
+  // Validate archive buffer safety
+  validateZipArchive(zipBuffer);
+
+  const workspaceId = `ws_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const workspacePath = path.resolve(config.workspaceRoot, workspaceId);
+
+  // Safely extract into bounded disposable workspace
+  extractZipArchive(zipBuffer, workspacePath);
+
+  return registerRepository({
+    sourceType: 'ZIP_UPLOAD',
+    displayName: displayName || `archive-${workspaceId}`,
+    defaultRef,
+    workspacePath
+  });
 }
 
 /**
@@ -244,6 +274,7 @@ function _resetStore() {
     displayName: 'intentionally-vulnerable-node-app',
     sanitizedSourceUrl: null,
     defaultRef: 'main',
+    workspacePath: path.resolve(__dirname, '../../../fixtures/intentionally-vulnerable-node-app'),
     createdAt: '2026-10-31T03:00:00.000Z',
     ownerId: null
   });
@@ -252,6 +283,7 @@ function _resetStore() {
 module.exports = {
   validateGitHubUrl,
   registerRepository,
+  ingestZipArchive,
   getRepositoryById,
   listRepositories,
   _resetStore
