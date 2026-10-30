@@ -1,0 +1,48 @@
+{
+  "version": "1.136.0",
+  "results": [
+    {
+      "check_id": "javascript.express.security.audit.sqli",
+      "path": "src/controllers/user.controller.js",
+      "start": { "line": 42, "col": 5, "offset": 1200 },
+      "end": { "line": 42, "col": 85, "offset": 1280 },
+      "extra": {
+        "message": "Detected direct string interpolation in SQL query. Use parameterized queries instead.",
+        "metadata": {
+          "cwe": "CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')",
+          "confidence": "HIGH",
+          "security-severity": "9.8"
+        },
+        "severity": "ERROR",
+        "lines": "const query = `SELECT * FROM users WHERE username = '${req.query.username}'`;"
+      }
+    },
+    {
+      "check_id": "generic.secrets.security.hardcoded-jwt-secret",
+      "path": "src/config/jwt.js",
+      "start": { "line": 10, "col": 1, "offset": 250 },
+      "end": { "line": 10, "col": 60, "offset": 310 },
+      "extra": {
+        "message": "Hardcoded JWT secret token detected in source code.",
+        "metadata": {
+          "cwe": "CWE-798: Use of Hard-coded Credentials",
+          "confidence": "MEDIUM"
+        },
+        "severity": "WARNING",
+        "lines": "const JWT_SECRET = \"super_secret_production_key_123456789\";"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": ["src/controllers/user.controller.js", "src/config/jwt.js"],
+    "skipped": []
+  },
+  "time": {
+    "rules": {
+      "javascript.express.security.audit.sqli": 0.05,
+      "generic.secrets.security.hardcoded-jwt-secret": 0.03
+    }
+  }
+}
+
