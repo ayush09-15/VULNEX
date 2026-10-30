@@ -4,7 +4,9 @@
  */
 
 const scanStateMachine = require('./scanStateMachine');
+const scanOrchestrator = require('./scanOrchestrator');
 
 module.exports = {
-  ...scanStateMachine
+  ...scanStateMachine,
+  ...scanOrchestrator
 };
