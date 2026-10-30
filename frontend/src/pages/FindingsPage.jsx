@@ -1,146 +1,205 @@
-import { useState } from 'react';
-import { Search, Filter } from 'lucide-react';
-import SeverityBadge from '../components/common/SeverityBadge';
+import { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
+import FindingFilterBar from '../components/findings/FindingFilterBar';
+import FindingsTable from '../components/findings/FindingsTable';
+import FindingDetailDrawer from '../components/findings/FindingDetailDrawer';
+import { filterAndSortFindings } from '../utils/findingFilter';
+import vulnexApi from '../services/api';
+
+const INITIAL_FINDINGS = [
+  {
+    id: 'find_sql_001',
+    scanId: 'scan_01JAZZ80',
+    title: 'Potential SQL Injection via unparameterized string concatenation',
+    ruleId: 'security.node.sql-injection',
+    category: 'SQL_INJECTION',
+    severity: 'CRITICAL',
+    confidence: 'HIGH',
+    filePath: 'src/routes/user.js',
+    startLine: 24,
+    endLine: 24,
+    scanner: 'semgrep',
+    status: 'DETECTED',
+    message: 'Detected untrusted user input directly concatenated into database query without parameterization.',
+    fingerprint: 'sha256_e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+    createdAt: '2026-10-31T03:14:00.000Z',
+    aiInvestigation: null,
+  },
+  {
+    id: 'find_xss_002',
+    scanId: 'scan_01JAZZ80',
+    title: 'Reflected Cross-Site Scripting (XSS) in search handler',
+    ruleId: 'security.node.xss',
+    category: 'XSS',
+    severity: 'HIGH',
+    confidence: 'MEDIUM',
+    filePath: 'src/controllers/search.js',
+    startLine: 45,
+    endLine: 45,
+    scanner: 'semgrep',
+    status: 'PATCH_PROPOSED',
+    message: 'Unescaped user input rendered directly to response body in HTML execution context.',
+    fingerprint: 'sha256_ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb',
+    createdAt: '2026-10-31T03:14:10.000Z',
+    aiInvestigation: {
+      assessment: 'LIKELY_TRUE',
+      severity: 'HIGH',
+      summary: 'Input parameter "q" reflected into HTML response without context-aware output encoding.',
+      evidence: ['Direct res.send with string interpolation'],
+      preconditions: ['User clicks crafted URL containing HTML payload'],
+      potentialImpact: 'Session hijacking, DOM manipulation, credential theft.',
+      recommendedFix: 'Encode query parameter using html-entities or sanitize with DOMPurify.',
+      confidence: 'HIGH',
+      limitations: ['Static AST match without browser runtime execution'],
+    },
+  },
+  {
+    id: 'find_dep_003',
+    scanId: 'scan_01JAZZ80',
+    title: 'Prototype Pollution in json-schema (CVE-2021-3918)',
+    ruleId: 'npm.audit.cve-2021-3918',
+    category: 'VULNERABLE_DEPENDENCY',
+    severity: 'HIGH',
+    confidence: 'HIGH',
+    filePath: 'package.json',
+    startLine: 18,
+    endLine: 18,
+    scanner: 'npm-audit',
+    status: 'TRIAGED',
+    message: 'Package json-schema version 0.2.3 has published high-severity prototype pollution advisory.',
+    fingerprint: 'sha256_4e07408562bedb8b60ce05c1decfe3ad16b72230967de01f640b7e4729b49fce',
+    createdAt: '2026-10-31T03:14:20.000Z',
+    aiInvestigation: null,
+  },
+  {
+    id: 'find_cmd_004',
+    scanId: 'scan_01JAZZ80',
+    title: 'Command Injection via child_process.exec concatenation',
+    ruleId: 'security.node.command-injection',
+    category: 'COMMAND_INJECTION',
+    severity: 'MEDIUM',
+    confidence: 'MEDIUM',
+    filePath: 'src/utils/system.js',
+    startLine: 89,
+    endLine: 89,
+    scanner: 'semgrep',
+    status: 'VERIFIED',
+    message: 'Shell command assembled from untrusted parameter string.',
+    fingerprint: 'sha256_4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a',
+    createdAt: '2026-10-31T03:14:30.000Z',
+    aiInvestigation: {
+      assessment: 'LIKELY_TRUE',
+      severity: 'MEDIUM',
+      summary: 'child_process.exec invoked with shell interpolation.',
+      evidence: ['child_process.exec(`ping -c 1 ${host}`)'],
+      preconditions: ['Host parameter accepts arbitrary characters like semicolon or pipe'],
+      potentialImpact: 'Arbitrary host command execution under server user permissions.',
+      recommendedFix: 'Use child_process.execFile with argument array rather than shell concatenation.',
+      confidence: 'HIGH',
+      limitations: ['Host OS command shell behavior differences'],
+    },
+  },
+];
+
+const INITIAL_FILTERS = {
+  severity: 'ALL',
+  category: 'ALL',
+  scanner: 'ALL',
+  status: 'ALL',
+  file: '',
+  search: '',
+};
 
 export default function FindingsPage() {
-  const [filterSeverity, setFilterSeverity] = useState('ALL');
-  const [searchQuery, setSearchQuery] = useState('');
+  const navigate = useNavigate();
+  const [findings, setFindings] = useState(INITIAL_FINDINGS);
+  const [filters, setFilters] = useState(INITIAL_FILTERS);
+  const [sortConfig, setSortConfig] = useState({ key: 'severity', direction: 'desc' });
+  const [selectedFinding, setSelectedFinding] = useState(null);
 
-  const findings = [
-    {
-      id: 'find_sql_001',
-      title: 'Potential SQL Injection via unparameterized string concatenation',
-      category: 'SQL_INJECTION',
-      severity: 'CRITICAL',
-      confidence: 'HIGH',
-      filePath: 'src/routes/user.js',
-      startLine: 24,
-      scanner: 'semgrep',
-      status: 'DETECTED',
-      message: 'Detected untrusted user input directly concatenated into database query.',
-    },
-    {
-      id: 'find_xss_002',
-      title: 'Reflected Cross-Site Scripting (XSS) in search handler',
-      category: 'XSS',
-      severity: 'HIGH',
-      confidence: 'MEDIUM',
-      filePath: 'src/controllers/search.js',
-      startLine: 45,
-      scanner: 'semgrep',
-      status: 'PATCH_PROPOSED',
-      message: 'Unescaped user input rendered directly to response body.',
-    },
-    {
-      id: 'find_sec_003',
-      title: 'Hard-coded JWT signing secret detected in source',
-      category: 'SECRETS',
-      severity: 'HIGH',
-      confidence: 'HIGH',
-      filePath: 'src/config/jwt.js',
-      startLine: 12,
-      scanner: 'semgrep',
-      status: 'TRIAGED',
-      message: 'Static secret key present. Secrets must be supplied via environment variables.',
-    },
-  ];
+  useEffect(() => {
+    let isMounted = true;
+    const fetchLiveFindings = async () => {
+      try {
+        const res = await vulnexApi.scans.getFindings('scan_default');
+        if (isMounted && res && Array.isArray(res) && res.length > 0) {
+          setFindings(res);
+        }
+      } catch {
+        // Fall back gracefully to initialized findings
+      }
+    };
 
-  const filtered = findings.filter((f) => {
-    if (filterSeverity !== 'ALL' && f.severity !== filterSeverity) return false;
-    if (searchQuery && !f.title.toLowerCase().includes(searchQuery.toLowerCase()) && !f.filePath.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-    return true;
-  });
+    fetchLiveFindings();
+    return () => { isMounted = false; };
+  }, []);
+
+  const handleChangeFilter = (key, value) => {
+    setFilters((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const handleResetFilters = () => {
+    setFilters(INITIAL_FILTERS);
+    setSortConfig({ key: 'severity', direction: 'desc' });
+  };
+
+  const handleChangeSort = (key, direction) => {
+    setSortConfig({ key, direction });
+  };
+
+  const handleUpdateFinding = (findingId, updates) => {
+    setFindings((prev) =>
+      prev.map((f) => (f.id === findingId ? { ...f, ...updates } : f))
+    );
+    if (selectedFinding?.id === findingId) {
+      setSelectedFinding((prev) => ({ ...prev, ...updates }));
+    }
+  };
+
+  const handleNavigateToPatch = (finding) => {
+    setSelectedFinding(null);
+    navigate('/remediation', { state: { finding } });
+  };
+
+  const filteredFindings = useMemo(() => {
+    return filterAndSortFindings(findings, filters, sortConfig);
+  }, [findings, filters, sortConfig]);
 
   return (
     <div className="space-y-6 animate-fadeIn">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold text-slate-100">Findings Explorer</h1>
-          <p className="text-xs text-slate-400 mt-1">
-            Search, filter, inspect and investigate normalized vulnerability records
-          </p>
-        </div>
+      {/* Title & Introduction */}
+      <div>
+        <h1 className="text-2xl font-extrabold text-slate-100">Findings Explorer</h1>
+        <p className="text-xs text-slate-400 mt-1">
+          Search, filter, inspect and investigate normalized vulnerability records with strict evidence separation
+        </p>
       </div>
 
-      {/* Filter and Search Bar */}
-      <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by title, rule ID, or file path..."
-            className="w-full pl-9 pr-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-500 font-mono"
-          />
-        </div>
+      {/* Filter & Search Controls (Commit 17) */}
+      <FindingFilterBar
+        filters={filters}
+        onChangeFilter={handleChangeFilter}
+        onResetFilters={handleResetFilters}
+        sortConfig={sortConfig}
+        onChangeSort={handleChangeSort}
+        totalCount={findings.length}
+        filteredCount={filteredFindings.length}
+      />
 
-        <div className="flex items-center gap-2">
-          <Filter className="w-3.5 h-3.5 text-slate-400" />
-          <select
-            value={filterSeverity}
-            onChange={(e) => setFilterSeverity(e.target.value)}
-            className="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-300 focus:outline-none focus:border-cyan-500"
-          >
-            <option value="ALL">All Severities</option>
-            <option value="CRITICAL">Critical</option>
-            <option value="HIGH">High</option>
-            <option value="MEDIUM">Medium</option>
-            <option value="LOW">Low</option>
-          </select>
-        </div>
-      </div>
+      {/* Findings Table (Commit 17) */}
+      <FindingsTable
+        findings={filteredFindings}
+        onSelectFinding={(finding) => setSelectedFinding(finding)}
+        selectedFindingId={selectedFinding?.id}
+      />
 
-      {/* Findings Table */}
-      <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-400 uppercase font-mono tracking-wider">
-                <th className="py-3 px-4">Severity</th>
-                <th className="py-3 px-4">Title</th>
-                <th className="py-3 px-4">Location</th>
-                <th className="py-3 px-4">Scanner</th>
-                <th className="py-3 px-4">Confidence</th>
-                <th className="py-3 px-4">Status</th>
-                <th className="py-3 px-4 text-right">Action</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60 font-mono">
-              {filtered.map((item) => (
-                <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    <SeverityBadge severity={item.severity} />
-                  </td>
-                  <td className="py-3 px-4 font-sans font-medium text-slate-200">
-                    <div>{item.title}</div>
-                    <div className="text-[11px] text-slate-500 font-mono mt-0.5">{item.message}</div>
-                  </td>
-                  <td className="py-3 px-4 text-cyan-400 whitespace-nowrap">
-                    {item.filePath}:{item.startLine}
-                  </td>
-                  <td className="py-3 px-4 text-slate-400 uppercase whitespace-nowrap">
-                    {item.scanner}
-                  </td>
-                  <td className="py-3 px-4 text-slate-300 whitespace-nowrap">
-                    {item.confidence}
-                  </td>
-                  <td className="py-3 px-4 whitespace-nowrap">
-                    <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700">
-                      {item.status}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-right whitespace-nowrap">
-                    <button className="px-2.5 py-1 rounded bg-cyan-600 hover:bg-cyan-500 text-white font-sans text-xs font-medium transition-colors">
-                      Investigate
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {/* Detail Drawer & Evidence Panel (Commit 20) */}
+      <FindingDetailDrawer
+        finding={selectedFinding}
+        onClose={() => setSelectedFinding(null)}
+        onUpdateFinding={handleUpdateFinding}
+        onNavigateToPatch={handleNavigateToPatch}
+      />
     </div>
   );
 }
