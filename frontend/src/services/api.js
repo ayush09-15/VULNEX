@@ -158,12 +158,20 @@ export const vulnexApi = {
 
   // Scans
   scans: {
+    list: async () => {
+      const res = await axiosInstance.get('/scans');
+      return res.data;
+    },
     start: async (payload) => {
       const res = await axiosInstance.post('/scans', payload);
       return res.data;
     },
     get: async (id) => {
       const res = await axiosInstance.get(`/scans/${encodeURIComponent(id)}`);
+      return res.data;
+    },
+    getEvents: async (id) => {
+      const res = await axiosInstance.get(`/scans/${encodeURIComponent(id)}/events`);
       return res.data;
     },
     getFindings: async (scanId, params = {}) => {
@@ -178,6 +186,10 @@ export const vulnexApi = {
 
   // Findings
   findings: {
+    list: async (params = {}) => {
+      const res = await axiosInstance.get('/findings', { params });
+      return res.data;
+    },
     get: async (id) => {
       const res = await axiosInstance.get(`/findings/${encodeURIComponent(id)}`);
       return res.data;

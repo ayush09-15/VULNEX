@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import FindingFilterBar from '../components/findings/FindingFilterBar';
 import FindingsTable from '../components/findings/FindingsTable';
 import FindingDetailDrawer from '../components/findings/FindingDetailDrawer';
@@ -112,6 +112,7 @@ const INITIAL_FILTERS = {
 
 export default function FindingsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [findings, setFindings] = useState(INITIAL_FINDINGS);
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [sortConfig, setSortConfig] = useState({ key: 'severity', direction: 'desc' });
@@ -121,9 +122,22 @@ export default function FindingsPage() {
     let isMounted = true;
     const fetchLiveFindings = async () => {
       try {
-        const res = await vulnexApi.scans.getFindings('scan_default');
-        if (isMounted && res && Array.isArray(res) && res.length > 0) {
-          setFindings(res);
+        const targetScanId = location.state?.scanId;
+        let items = null;
+        if (targetScanId) {
+          const res = await vulnexApi.scans.getFindings(targetScanId);
+          items = Array.isArray(res) ? res : (res?.data || []);
+        } else {
+          try {
+            const listRes = await vulnexApi.findings.list();
+            items = Array.isArray(listRes) ? listRes : (listRes?.data || []);
+          } catch {
+            const res = await vulnexApi.scans.getFindings('scan_default');
+            items = Array.isArray(res) ? res : (res?.data || []);
+          }
+        }
+        if (isMounted && Array.isArray(items) && items.length > 0) {
+          setFindings(items);
         }
       } catch {
         // Fall back gracefully to initialized findings
@@ -132,7 +146,7 @@ export default function FindingsPage() {
 
     fetchLiveFindings();
     return () => { isMounted = false; };
-  }, []);
+  }, [location.state?.scanId]);
 
   const handleChangeFilter = (key, value) => {
     setFilters((prev) => ({ ...prev, [key]: value }));

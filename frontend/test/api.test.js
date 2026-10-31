@@ -24,10 +24,13 @@ test('vulnexApi exposes canonical domain resource handlers', () => {
   assert.equal(typeof vulnexApi.repositories.list, 'function');
   assert.equal(typeof vulnexApi.repositories.get, 'function');
   assert.equal(typeof vulnexApi.repositories.register, 'function');
+  assert.equal(typeof vulnexApi.scans.list, 'function');
   assert.equal(typeof vulnexApi.scans.start, 'function');
   assert.equal(typeof vulnexApi.scans.get, 'function');
+  assert.equal(typeof vulnexApi.scans.getEvents, 'function');
   assert.equal(typeof vulnexApi.scans.getFindings, 'function');
   assert.equal(typeof vulnexApi.scans.getReport, 'function');
+  assert.equal(typeof vulnexApi.findings.list, 'function');
   assert.equal(typeof vulnexApi.findings.get, 'function');
   assert.equal(typeof vulnexApi.findings.investigate, 'function');
   assert.equal(typeof vulnexApi.findings.generatePatch, 'function');
