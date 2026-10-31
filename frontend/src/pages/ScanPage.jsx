@@ -53,7 +53,7 @@ export default function ScanPage() {
   const location = useLocation();
 
   // Intake State
-  const [targetType, setTargetType] = useState('FIXTURE'); // 'REGISTERED' | 'FIXTURE' | 'GITHUB' | 'ZIP'
+  const [targetType, setTargetType] = useState('GITHUB'); // 'REGISTERED' | 'FIXTURE' | 'GITHUB' | 'ZIP'
   const [selectedRepo, setSelectedRepo] = useState(null);
   const [availableRepos, setAvailableRepos] = useState([]);
   const [gitUrl, setGitUrl] = useState('');
@@ -67,7 +67,7 @@ export default function ScanPage() {
   // Execution & Progress State
   const [isScanning, setIsScanning] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
-  const [lastTargetRepoId, setLastTargetRepoId] = useState('repo_fixture_01');
+  const [lastTargetRepoId, setLastTargetRepoId] = useState('');
   const [activeStage, setActiveStage] = useState('IDLE'); // 'IDLE' | 'QUEUED' | 'PREPARING' | 'SCANNING' | 'NORMALIZING' | 'COMPLETED' | 'PARTIAL' | 'FAILED'
   const [scanRecord, setScanRecord] = useState(null);
   const [error, setError] = useState(null);
@@ -201,10 +201,10 @@ export default function ScanPage() {
     setScanRecord(null);
 
     try {
-      let repositoryId = 'repo_fixture_01';
+      let repositoryId = selectedRepo?.id || lastTargetRepoId || '';
 
       if (targetType === 'REGISTERED') {
-        repositoryId = selectedRepo?.id || lastTargetRepoId || 'repo_fixture_01';
+        repositoryId = selectedRepo?.id || lastTargetRepoId;
       } else if (targetType === 'GITHUB') {
         setActiveStage('PREPARING');
         const repoRes = await vulnexApi.repositories.register({

@@ -5,12 +5,7 @@ import HeaderBar from './HeaderBar';
 
 export default function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
-  const [activeRepo, setActiveRepo] = useState({
-    id: 'repo_fixture_01',
-    displayName: 'vulnerable-node-fixture',
-    defaultRef: 'main',
-    sourceType: 'LOCAL_FIXTURE',
-  });
+  const [activeRepo, setActiveRepo] = useState(null);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">

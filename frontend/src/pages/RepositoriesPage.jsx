@@ -16,32 +16,9 @@ import {
 } from 'lucide-react';
 import { vulnexApi } from '../services/api';
 
-const DEFAULT_REPOS = [
-  {
-    id: 'repo_fixture_01',
-    displayName: 'intentionally-vulnerable-node-app',
-    sourceType: 'LOCAL_FIXTURE',
-    sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
-    defaultRef: 'main',
-    latestScanStatus: 'COMPLETED',
-    findingsCount: 4,
-    createdAt: new Date().toISOString()
-  },
-  {
-    id: 'repo_01JAZZ80001',
-    displayName: 'juice-shop-sample',
-    sourceType: 'GITHUB',
-    sanitizedSourceUrl: 'https://github.com/juice-shop/juice-shop',
-    defaultRef: 'main',
-    latestScanStatus: 'COMPLETED',
-    findingsCount: 12,
-    createdAt: new Date().toISOString()
-  },
-];
-
 export default function RepositoriesPage() {
   const navigate = useNavigate();
-  const [repos, setRepos] = useState(DEFAULT_REPOS);
+  const [repos, setRepos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
 
@@ -182,6 +159,27 @@ export default function RepositoriesPage() {
       </div>
 
       {/* Repositories Grid */}
+      {repos.length === 0 && !loading ? (
+        <div className="p-12 rounded-2xl bg-slate-900/40 border border-slate-800 text-center space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-cyan-950/60 border border-cyan-500/30 flex items-center justify-center mx-auto text-cyan-400">
+            <FolderGit2 className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-slate-200">No Repositories Registered</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              Connect a GitHub repository or upload a project ZIP archive to start scanning and analyzing for security vulnerabilities.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsModalOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-semibold shadow transition-all cursor-pointer"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Register First Repository</span>
+          </button>
+        </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {repos.map((repo) => (
           <div
@@ -225,6 +223,7 @@ export default function RepositoriesPage() {
           </div>
         ))}
       </div>
+      )}
 
       {/* Register Repository Modal */}
       {isModalOpen && (

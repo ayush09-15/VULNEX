@@ -49,7 +49,7 @@ export default function HeaderBar({ collapsed, activeRepo }) {
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono text-slate-300">
           <FolderGit2 className="w-3.5 h-3.5 text-cyan-400" />
           <span className="font-semibold text-slate-200">
-            {activeRepo?.displayName || 'intentionally-vulnerable-node-app'}
+            {activeRepo?.displayName || 'No Repository Selected'}
           </span>
           <span className="text-slate-600">/</span>
           <span className="flex items-center gap-1 text-slate-400">

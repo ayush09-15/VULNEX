@@ -17,40 +17,12 @@ import DiffViewer from '../components/remediation/DiffViewer';
 import VerificationChecklist from '../components/verification/VerificationChecklist';
 import { vulnexApi } from '../services/api';
 
-const SAMPLE_PATCH = {
-  id: 'patch_sql_fix_01',
-  findingId: 'find_sql_injection_01',
-  diff: `--- a/src/routes/user.js
-+++ b/src/routes/user.js
-@@ -22,5 +22,5 @@ router.get('/profile', async (req, res) => {
-    const { id } = req.query;
--   const query = \`SELECT * FROM users WHERE id = '\${id}'\`;
--   const user = await db.query(query);
-+   const query = 'SELECT * FROM users WHERE id = $1';
-+   const user = await db.query(query, [id]);
-    return res.json(user);
- }`,
-  rationale:
-    'Replaces dynamic template string interpolation with parameterized prepared statement query ($1), neutralizing SQL injection vulnerability (CWE-89) without altering external endpoint contracts.',
-  changedFiles: ['src/routes/user.js'],
-  reviewState: 'PENDING_REVIEW',
-  evidenceReferences: [
-    { type: 'SNIPPET', reference: "const query = `SELECT * FROM users WHERE id = '${id}'`;" },
-    { type: 'RULE', reference: 'javascript.express.security.audit.sqli' }
-  ],
-  metadata: {
-    model: 'gemma-2-9b-it',
-    confidence: 'HIGH',
-    requiresHumanReview: true
-  }
-};
-
 export default function RemediationPage() {
   const location = useLocation();
   const incomingFinding = location.state?.finding;
   const incomingPatchId = location.state?.patchId;
 
-  const [patch, setPatch] = useState(SAMPLE_PATCH);
+  const [patch, setPatch] = useState(incomingFinding?.proposedPatch || null);
   const [patchesList, setPatchesList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generatingPatch, setGeneratingPatch] = useState(false);
@@ -399,13 +371,27 @@ export default function RemediationPage() {
       )}
 
       {/* Syntax-Aware Diff Viewer & Approval Panel */}
-      <DiffViewer
-        patch={patch}
-        onApprove={handleApprove}
-        onReject={handleReject}
-        onApply={handleApply}
-        isLoading={loading}
-      />
+      {!patch ? (
+        <div className="p-12 text-center rounded-2xl bg-slate-900/40 border border-slate-800 space-y-4">
+          <div className="w-12 h-12 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-center mx-auto text-cyan-400">
+            <Wrench className="w-6 h-6" />
+          </div>
+          <div>
+            <h3 className="text-base font-bold text-slate-200">No Remediation Patch Selected</h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-md mx-auto">
+              Select a finding from the Findings Explorer to review details and generate an evidence-linked AI patch proposal.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <DiffViewer
+          patch={patch}
+          onApprove={handleApprove}
+          onReject={handleReject}
+          onApply={handleApply}
+          isLoading={loading}
+        />
+      )}
 
       {/* Workspace Rollback Action when applied */}
       {(patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED') && (

@@ -26,28 +26,29 @@ const defaultFixturePath = path.resolve(__dirname, '../../../fixtures');
 const resolvedFixtureWorkspace = fs.existsSync(defaultFixturePath) ? defaultFixturePath : './fixtures';
 
 function seedDefaultRepositories() {
+
   repositoriesStore.set(defaultFixtureId, {
-    id: defaultFixtureId,
-    sourceType: 'LOCAL_FIXTURE',
-    displayName: 'intentionally-vulnerable-node-app',
-    sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
-    defaultRef: 'main',
-    createdAt: '2026-10-31T03:00:00.000Z',
-    ownerId: null,
-    workspacePath: resolvedFixtureWorkspace
-  });
+      id: defaultFixtureId,
+      sourceType: 'LOCAL_FIXTURE',
+      displayName: 'intentionally-vulnerable-node-app',
+      sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
+      defaultRef: 'main',
+      createdAt: '2026-10-31T03:00:00.000Z',
+      ownerId: null,
+      workspacePath: resolvedFixtureWorkspace
+    });
 
   repositoriesStore.set(sampleJuiceShopId, {
-    id: sampleJuiceShopId,
-    sourceType: 'GITHUB',
-    displayName: 'juice-shop-sample',
-    sanitizedSourceUrl: 'https://github.com/juice-shop/juice-shop',
-    defaultRef: 'main',
-    createdAt: '2026-10-31T03:00:00.000Z',
-    ownerId: null,
-    workspacePath: resolvedFixtureWorkspace
-  });
-}
+      id: sampleJuiceShopId,
+      sourceType: 'GITHUB',
+      displayName: 'juice-shop-sample',
+      sanitizedSourceUrl: 'https://github.com/juice-shop/juice-shop',
+      defaultRef: 'main',
+      createdAt: '2026-10-31T03:00:00.000Z',
+      ownerId: null,
+      workspacePath: resolvedFixtureWorkspace
+    });
+  }
 
 seedDefaultRepositories();
 
@@ -333,7 +334,7 @@ async function ensureWorkspace(repositoryId, ref) {
         const files = fs.readdirSync(targetDir);
         if (files.length > 0) {
           repo.workspacePath = targetDir;
-          repositoriesStore.set(repo.id, repo);
+        repositoriesStore.set(repo.id, repo);
           return targetDir;
         }
       } catch (_) {}
@@ -403,14 +404,14 @@ async function ensureWorkspace(repositoryId, ref) {
     }
 
     repo.workspacePath = targetDir;
-    repositoriesStore.set(repo.id, repo);
+  repositoriesStore.set(repo.id, repo);
     return targetDir;
   }
 
   // 3. Fallback check for fixture
   if (repo.id === defaultFixtureId && fs.existsSync(resolvedFixtureWorkspace)) {
     repo.workspacePath = resolvedFixtureWorkspace;
-    repositoriesStore.set(repo.id, repo);
+  repositoriesStore.set(repo.id, repo);
     return resolvedFixtureWorkspace;
   }
 
@@ -433,3 +434,5 @@ module.exports = {
   scanWorkspace: inventoryService.scanWorkspace,
   getFileExcerpt: inventoryService.getFileExcerpt
 };
+
+
