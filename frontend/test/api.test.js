@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ApiError, vulnexApi } from '../src/services/api.js';
+import { formatScannerStatusList } from '../src/utils/scanStateFormatter.js';
 
 test('ApiError encapsulates canonical error attributes', () => {
   const err = new ApiError('Repository URL not supported', {
@@ -43,4 +44,29 @@ test('vulnexApi exposes canonical domain resource handlers', () => {
   assert.equal(typeof vulnexApi.patches.rollback, 'function');
   assert.equal(typeof vulnexApi.scans.cancel, 'function');
   assert.equal(typeof vulnexApi.scans.delete, 'function');
+});
+
+test('formatScannerStatusList handles scannersFailed array of objects safely', () => {
+  const scanRecord = {
+    summary: {
+      scannersRun: ['pattern-sast'],
+      scannersFailed: [
+        {
+          scanner: 'npm-audit',
+          error: 'Process execution error for "npm": spawn npm ENOENT'
+        }
+      ]
+    }
+  };
+
+  const list = formatScannerStatusList(scanRecord);
+  assert.equal(list.length, 2);
+
+  const npmAudit = list.find((s) => s.name === 'npm-audit');
+  assert.ok(npmAudit);
+  assert.equal(typeof npmAudit.label, 'string');
+  assert.equal(npmAudit.label, 'npm Dependency Audit');
+  assert.equal(npmAudit.status, 'FAILED');
+  assert.equal(typeof npmAudit.error, 'string');
+  assert.ok(npmAudit.error.includes('npm ENOENT'));
 });

@@ -28,7 +28,9 @@ export const SCAN_UI_STATES = Object.freeze({
  */
 export function sanitizeDisplayError(err) {
   if (!err) return 'An unexpected error occurred.';
-  let raw = typeof err === 'string' ? err : (err.message || String(err));
+  let raw = typeof err === 'string'
+    ? err
+    : (err.message || err.error || (typeof err === 'object' ? JSON.stringify(err) : String(err)));
 
   // 1. Strip stack traces (lines starting with 'at ...' or containing stack traces)
   let primaryLine = raw.split(/\r?\n/)[0] || '';
@@ -129,21 +131,37 @@ export function formatScannerStatusList(scanRecord) {
   if (!scanRecord || typeof scanRecord !== 'object') return [];
 
   const summary = scanRecord.summary || {};
-  const scannersRun = summary.scannersRun || [];
-  const scannersFailed = summary.scannersFailed || [];
-  const scannerErrors = summary.errors || [];
+  const scannersRun = Array.isArray(summary.scannersRun) ? summary.scannersRun : [];
+  const rawScannersFailed = Array.isArray(summary.scannersFailed) ? summary.scannersFailed : [];
+  const scannerErrors = Array.isArray(summary.errors) ? summary.errors : [];
   const toolVersions = scanRecord.toolVersions || scanRecord.scan?.toolVersions || {};
 
-  const allScanners = new Set([
-    ...scannersRun,
-    ...scannersFailed,
+  // Build a lookup of failed scanner names and their associated errors
+  const failedMap = new Map();
+  for (const item of rawScannersFailed) {
+    if (typeof item === 'string') {
+      failedMap.set(item, null);
+    } else if (item && typeof item === 'object') {
+      const name = item.scanner || item.name || 'unknown';
+      failedMap.set(name, item.error || item.message || null);
+    }
+  }
+
+  // Normalize successful scanner names to plain strings
+  const successfulScannerNames = new Set(
+    scannersRun.map((s) => (typeof s === 'string' ? s : (s?.scanner || s?.name || String(s))))
+  );
+
+  const allScannerNames = new Set([
+    ...successfulScannerNames,
+    ...failedMap.keys(),
     ...Object.keys(toolVersions)
   ]);
 
   // If no scanners listed, fallback to events
-  if (allScanners.size === 0 && Array.isArray(scanRecord.events)) {
+  if (allScannerNames.size === 0 && Array.isArray(scanRecord.events)) {
     for (const evt of scanRecord.events) {
-      if (evt.stage) allScanners.add(evt.stage.toLowerCase());
+      if (evt.stage) allScannerNames.add(evt.stage.toLowerCase());
     }
   }
 
@@ -151,26 +169,36 @@ export function formatScannerStatusList(scanRecord) {
     semgrep: 'Semgrep SAST',
     'npm-audit': 'npm Dependency Audit',
     patterns: 'Deterministic Pattern Engine',
+    'pattern-sast': 'Deterministic Pattern Engine',
     deterministic: 'Deterministic Pattern Engine',
   };
 
   const list = [];
-  let errIndex = 0;
+  let fallbackErrIndex = 0;
 
-  for (const scanner of allScanners) {
-    const isFailed = scannersFailed.includes(scanner);
-    const isSuccess = scannersRun.includes(scanner);
-    const version = toolVersions[scanner] || null;
+  for (const scannerName of allScannerNames) {
+    if (!scannerName || typeof scannerName !== 'string') continue;
+
+    const isFailed = failedMap.has(scannerName);
+    const isSuccess = successfulScannerNames.has(scannerName);
+    const version = toolVersions[scannerName] || null;
 
     let scannerErr = null;
     if (isFailed) {
-      scannerErr = scannerErrors[errIndex] ? sanitizeDisplayError(scannerErrors[errIndex]) : 'Scanner execution failed';
-      errIndex++;
+      const specificErr = failedMap.get(scannerName);
+      if (specificErr) {
+        scannerErr = sanitizeDisplayError(specificErr);
+      } else if (scannerErrors[fallbackErrIndex]) {
+        scannerErr = sanitizeDisplayError(scannerErrors[fallbackErrIndex]);
+        fallbackErrIndex++;
+      } else {
+        scannerErr = 'Scanner execution failed';
+      }
     }
 
     list.push({
-      name: scanner,
-      label: SCANNER_LABELS[scanner] || scanner,
+      name: scannerName,
+      label: SCANNER_LABELS[scannerName] || scannerName,
       status: isFailed ? 'FAILED' : (isSuccess ? 'SUCCESS' : 'SKIPPED'),
       error: scannerErr,
       version: typeof version === 'string' ? version : null
