@@ -5,6 +5,8 @@ const { URL } = require('url');
 const { isPrivateOrBlockedHost } = require('../utils/ssrfGuard');
 const inventoryService = require('./inventory.service');
 const zipService = require('./zip.service');
+const processRunner = require('../utils/processRunner');
+const config = require('../config/env');
 
 /**
  * ============================================================================
@@ -179,7 +181,7 @@ function validateGitHubUrl(rawUrl) {
  * @param {string} [params.ownerId=null]
  * @returns {Object} Canonical Repository entity
  */
-function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = 'main', ownerId = null }) {
+function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = 'main', ownerId = null, workspacePath = null }) {
   if (!sourceType || !['GITHUB', 'ZIP_UPLOAD'].includes(sourceType)) {
     const err = new Error('Invalid sourceType. Must be either GITHUB or ZIP_UPLOAD.');
     err.code = 'INVALID_INPUT';
@@ -219,7 +221,8 @@ function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = '
     sanitizedSourceUrl,
     defaultRef: defaultRef || 'main',
     createdAt: new Date().toISOString(),
-    ownerId: ownerId || null
+    ownerId: ownerId || null,
+    workspacePath: workspacePath || null
   };
 
   repositoriesStore.set(id, record);
@@ -296,7 +299,129 @@ function _resetStore() {
 
 const clearRepositories = _resetStore;
 
+
+/**
+ * Ensures a valid bounded workspace exists for the repository.
+ * If the repository is GITHUB and not yet cloned, clones it into a bounded workspace.
+ *
+ * @param {string} repositoryId
+ * @param {string} [ref]
+ * @returns {Promise<string>} Resolved workspace directory path
+ */
+async function ensureWorkspace(repositoryId, ref) {
+  const repo = getRepositoryById(repositoryId);
+  if (!repo) {
+    const err = new Error(`Repository with ID "${repositoryId}" not found.`);
+    err.code = 'RESOURCE_NOT_FOUND';
+    err.statusCode = 404;
+    throw err;
+  }
+
+  // 1. If workspacePath already exists on disk, reuse it
+  if (repo.workspacePath && fs.existsSync(repo.workspacePath)) {
+    return repo.workspacePath;
+  }
+
+  // 2. If it's a GITHUB source, clone into a dedicated bounded workspace directory
+  if (repo.sourceType === 'GITHUB' && repo.sanitizedSourceUrl) {
+    const workspaceRoot = config.workspaceRoot || path.resolve(__dirname, '../../../.workspaces');
+    const targetDir = path.resolve(workspaceRoot, `ws_git_${repo.id}`);
+
+    // If targetDir already exists and contains files
+    if (fs.existsSync(targetDir)) {
+      try {
+        const files = fs.readdirSync(targetDir);
+        if (files.length > 0) {
+          repo.workspacePath = targetDir;
+          repositoriesStore.set(repo.id, repo);
+          return targetDir;
+        }
+      } catch (_) {}
+      try {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      } catch (_) {}
+    }
+
+    fs.mkdirSync(path.dirname(targetDir), { recursive: true });
+
+    const targetRef = ref || repo.defaultRef || 'main';
+    let cloneSuccess = false;
+    let lastError = null;
+
+    try {
+      const res = await processRunner.run('git', [
+        'clone',
+        '--depth', '1',
+        '--single-branch',
+        '--branch', targetRef,
+        repo.sanitizedSourceUrl,
+        targetDir
+      ], { timeoutMs: 60000 });
+
+      if (res.exitCode === 0) {
+        cloneSuccess = true;
+      } else {
+        lastError = res.stderr || res.stdout;
+      }
+    } catch (e) {
+      lastError = e.message;
+    }
+
+    // Fallback: If branch-specific clone failed, try default branch
+    if (!cloneSuccess) {
+      if (fs.existsSync(targetDir)) {
+        try {
+          fs.rmSync(targetDir, { recursive: true, force: true });
+        } catch (_) {}
+      }
+      try {
+        const fallbackRes = await processRunner.run('git', [
+          'clone',
+          '--depth', '1',
+          repo.sanitizedSourceUrl,
+          targetDir
+        ], { timeoutMs: 60000 });
+
+        if (fallbackRes.exitCode === 0) {
+          cloneSuccess = true;
+        } else {
+          lastError = fallbackRes.stderr || fallbackRes.stdout;
+        }
+      } catch (e) {
+        lastError = e.message;
+      }
+    }
+
+    if (!cloneSuccess || !fs.existsSync(targetDir)) {
+      const err = new Error(
+        `Failed to clone GitHub repository from ${repo.sanitizedSourceUrl}. Please verify the repository URL is public and accessible.`
+      );
+      err.code = 'GIT_CLONE_FAILED';
+      err.details = lastError;
+      err.statusCode = 422;
+      throw err;
+    }
+
+    repo.workspacePath = targetDir;
+    repositoriesStore.set(repo.id, repo);
+    return targetDir;
+  }
+
+  // 3. Fallback check for fixture
+  if (repo.id === defaultFixtureId && fs.existsSync(resolvedFixtureWorkspace)) {
+    repo.workspacePath = resolvedFixtureWorkspace;
+    repositoriesStore.set(repo.id, repo);
+    return resolvedFixtureWorkspace;
+  }
+
+  const err = new Error(`Cannot locate or provision workspace for repository "${repositoryId}".`);
+  err.code = 'WORKSPACE_NOT_FOUND';
+  err.statusCode = 404;
+  throw err;
+}
+
 module.exports = {
+  ensureWorkspace,
   validateGitHubUrl,
   registerRepository,
   ingestZipArchive,

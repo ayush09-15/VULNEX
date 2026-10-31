@@ -1,4 +1,5 @@
 const express = require('express');
+const fs = require('fs');
 const router = express.Router();
 const apiResponse = require('../utils/apiResponse');
 const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
@@ -51,14 +52,39 @@ router.post('/', async (req, res) => {
     let targetPath = repositoryPath;
     if (!targetPath && repositoryId) {
       const repo = repositoryService.getRepositoryById(repositoryId);
-      if (repo && repo.workspacePath) {
-        targetPath = repo.workspacePath;
+      if (repo) {
+        if (repo.workspacePath && fs.existsSync(repo.workspacePath)) {
+          targetPath = repo.workspacePath;
+        } else if (repo.sourceType === 'GITHUB' && repo.sanitizedSourceUrl) {
+          try {
+            targetPath = await repositoryService.ensureWorkspace(repo.id, ref || repo.defaultRef || 'main');
+          } catch (cloneErr) {
+            return apiResponse.error(res, {
+              code: cloneErr.code || 'GIT_CLONE_FAILED',
+              message: cloneErr.message || `Failed to clone repository from ${repo.sanitizedSourceUrl}`,
+              details: cloneErr.details
+            }, cloneErr.statusCode || 422);
+          }
+        }
       }
     }
 
-    // Default to local workspace or fixture if not specified
+    // Fallback strictly for local default fixture
     if (!targetPath) {
-      targetPath = './';
+      if (repositoryId === 'repo_fixture_01' || repositoryId === 'repo_default') {
+        const fixtureRepo = repositoryService.getRepositoryById('repo_fixture_01');
+        if (fixtureRepo?.workspacePath) {
+          targetPath = fixtureRepo.workspacePath;
+        }
+      }
+    }
+
+    // Strict containment: Never silently fall back to scanning host application root './'
+    if (!targetPath) {
+      return apiResponse.error(res, {
+        code: 'WORKSPACE_NOT_FOUND',
+        message: `Workspace for repository "${repositoryId}" is not available.`
+      }, 404);
     }
 
     const validation = validateCreateScan({

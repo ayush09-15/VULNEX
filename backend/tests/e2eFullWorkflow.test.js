@@ -206,4 +206,12 @@ describe('Full End-to-End System Integration Test', () => {
     assert.ok(typeof csvReport.content === 'string');
     assert.ok(csvReport.content.includes('Finding ID,Rule ID,Severity,File Path'));
   });
+  it('13. Workspace Confinement Invariant: scan results never contain host VULNEX application files', () => {
+    const findings = scanOrchestrator.getScanFindings(fixtureScanId);
+    for (const f of findings) {
+      assert.ok(!f.filePath.startsWith('backend/'), 'Scan results must never contain backend/ files of VULNEX');
+      assert.ok(!f.filePath.startsWith('frontend/'), 'Scan results must never contain frontend/ files of VULNEX');
+      assert.ok(!f.filePath.includes('restrictedRunner'), 'Scan results must never leak VULNEX source code');
+    }
+  });
 });
