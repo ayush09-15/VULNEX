@@ -12,6 +12,7 @@ const healthRoutes = require('./routes/health.routes');
 const repositoryRoutes = require('./routes/repository.routes');
 const scanRoutes = require('./routes/scan.routes');
 const findingRoutes = require('./routes/finding.routes');
+const patchRoutes = require('./routes/patch.routes');
 
 const app = express();
 
@@ -34,6 +35,7 @@ app.use('/api/health', healthRoutes);
 app.use('/api/repositories', repositoryRoutes);
 app.use('/api/scans', scanRoutes);
 app.use('/api/findings', findingRoutes);
+app.use('/api/patches', patchRoutes);
 
 // 5. 404 Not Found Catch-All
 app.use(notFound);
