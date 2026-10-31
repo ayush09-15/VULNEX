@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const processRunner = require('../utils/processRunner');
+const { executeSemgrepProcess, semgrepProcessWrapper } = require('./semgrepProcess');
 const semgrepParser = require('./semgrep.parser');
 const semgrepProvenance = require('./semgrep.provenance');
 
@@ -212,39 +213,23 @@ class SemgrepService {
       };
     }
 
-    // 3. Prepare Arguments Array (Never use shell concatenation)
-    // Command: semgrep scan --config <config> --json <workspace-path>
-    const args = [
-      'scan',
-      '--config', scanConfig,
-      '--json',
-      validatedWorkspace
-    ];
+    // 3. Execute Scanner via SemgrepProcessWrapper
+    const runnerResult = await executeSemgrepProcess(validatedWorkspace, {
+      binary: bin,
+      config: scanConfig,
+      timeoutMs,
+      maxBufferBytes: 25 * 1024 * 1024
+    });
 
-    const binDir = path.isAbsolute(bin) ? path.dirname(bin) : '';
-    const runnerPath = binDir ? `${binDir}:${process.env.PATH || ''}` : process.env.PATH || '';
-
-    // 4. Execute Scanner via ProcessRunner
-    let runnerResult;
-    try {
-      runnerResult = await processRunner.run(bin, args, {
-        cwd: validatedWorkspace,
-        timeoutMs,
-        maxBufferBytes: 25 * 1024 * 1024, // 25MB output limit
-        env: {
-          PATH: runnerPath,
-          SEMGREP_USER_AGENT_APPEND: 'VULNEX-Scanner/1.0.0'
-        }
-      });
-    } catch (procErr) {
-      const errorMsg = `Scanner execution failure: ${procErr.message}`;
+    if (runnerResult.status === 'SPAWN_ERROR') {
+      const errorMsg = `Scanner execution failure: ${runnerResult.error}`;
       errors.push(errorMsg);
       const provenance = semgrepProvenance.createRecord({
         scanId,
         version: semgrepVersion,
         config: scanConfig,
         timestamp,
-        durationMs: Date.now() - startTime,
+        durationMs: runnerResult.durationMs,
         exitCode: null,
         status: 'FAILED',
         findings: [],
