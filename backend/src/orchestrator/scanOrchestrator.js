@@ -4,6 +4,7 @@ const fs = require('fs');
 const { ScanStateMachine, SCAN_STATES, isTerminalState } = require('./scanStateMachine');
 const inventoryService = require('../services/inventory.service');
 const { semgrepService } = require('../services/semgrep.service');
+const npmAuditService = require('../services/npmAudit.service');
 const { validateFinding, validateScan } = require('../validators/canonical.schema');
 
 /**
@@ -89,6 +90,37 @@ function generateFingerprint({ ruleId, filePath, evidence }) {
   return crypto.createHash('sha256')
     .update(`${ruleId}:${normalizedPath}:${normalizedEvidence}`)
     .digest('hex');
+}
+
+/**
+ * Sanitize error messages to scrub stack traces, credentials, tokens, and private host paths.
+ * @param {Error|string|any} err
+ * @returns {string}
+ */
+function sanitizeErrorMessage(err) {
+  if (!err) return 'Unknown scanner error';
+  let raw = typeof err === 'string' ? err : (err.message || String(err));
+
+  // Extract primary error line (strip stack frames)
+  let line = raw.split(/\r?\n/)[0] || '';
+  line = line.replace(/\s+at\s+[\w$.<>]+\s+\([^)]+:\d+:\d+\)$/, '').trim();
+
+  // Strip file paths containing user home directories
+  line = line.replace(/(?:\/Users\/|\/home\/|[A-Za-z]:[\\/]Users[\\/])[^/\\]+[/\\]?/g, '~/');
+
+  // Redact AWS credentials
+  line = line.replace(/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]');
+
+  // Redact GitHub / generic tokens
+  line = line.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{30,}\b/g, '[REDACTED_TOKEN]');
+
+  // Redact JWT / Bearer tokens
+  line = line.replace(/Bearer\s+[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*/g, 'Bearer [REDACTED_JWT]');
+
+  // Redact secret / password / token assignments
+  line = line.replace(/(password|passwd|pwd|secret|api_key|apikey|auth_token)\s*([:=])\s*(['"`]?)(?!\[REDACTED_)([^'"`\s]{4,})\3/gi, '$1=$3[REDACTED_SECRET]$3');
+
+  return line || 'Unknown scanner error';
 }
 
 /**
@@ -179,6 +211,7 @@ function scanWithDeterministicPatterns(workspacePath, sourceFiles, scanId) {
 class ScanOrchestrator {
   constructor() {
     this.semgrep = semgrepService;
+    this.npmAudit = npmAuditService;
     this.inventory = inventoryService;
   }
 
@@ -190,7 +223,7 @@ class ScanOrchestrator {
    * @param {string} input.repositoryId - Associated repository ID
    * @param {string} input.repositoryPath - Absolute or relative path to workspace
    * @param {string} [input.ref='main'] - Git branch/tag/ref
-   * @param {Array<string>} [input.scanners=['semgrep', 'patterns']] - Target scanner engines
+   * @param {Array<string>} [input.scanners=['semgrep', 'npm-audit', 'patterns']] - Target scanner engines
    * @param {Object} [options={}]
    * @param {string} [options.scanId] - Predefined scanId (optional)
    * @param {boolean} [options.async=false] - Whether to return immediately after QUEUED
@@ -202,7 +235,7 @@ class ScanOrchestrator {
     const ref = input.ref || 'main';
     const configuredScanners = Array.isArray(input.scanners) && input.scanners.length > 0
       ? input.scanners
-      : ['semgrep', 'patterns'];
+      : ['semgrep', 'npm-audit', 'patterns'];
 
     // 1. Generate single traceable Scan ID
     const scanId = options.scanId || `scan_${crypto.randomBytes(6).toString('hex')}`;
@@ -226,7 +259,8 @@ class ScanOrchestrator {
         totalFindings: 0,
         bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
         scannersRun: [],
-        scannersFailed: []
+        scannersFailed: [],
+        scannerOutcomes: {}
       }
     };
 
@@ -287,57 +321,253 @@ class ScanOrchestrator {
         recordEvent(scanRecord, SCAN_STATES.SCANNING, 'IN_PROGRESS', `Initiating detection engines: ${configuredScanners.join(', ')}`);
 
         const rawFindings = [];
-        let semgrepExecuted = false;
 
-        // Scanner A: Semgrep CLI
-        if (configuredScanners.includes('semgrep')) {
+        const normScanners = configuredScanners.map(s => String(s).toLowerCase().trim());
+        const shouldRunSemgrep = normScanners.some(s => ['semgrep', 'semgrep-sast', 'sast'].includes(s));
+        const shouldRunNpmAudit = normScanners.some(s => ['npm-audit', 'npm_audit', 'npm', 'dependency-audit', 'dependency_audit', 'audit'].includes(s));
+        const shouldRunPatterns = normScanners.some(s => ['patterns', 'pattern-sast', 'pattern'].includes(s));
+
+        // Scanner A Task: Semgrep CLI
+        const runSemgrepTask = async () => {
+          const start = Date.now();
           recordEvent(scanRecord, SCAN_STATES.SCANNING, 'IN_PROGRESS', 'Executing Semgrep static analysis engine');
 
           try {
             const semgrepAvailable = await this.semgrep.isAvailable();
-            if (semgrepAvailable) {
-              const semgrepResult = await this.semgrep.scanWithSemgrep(resolvedWorkspace, { scanId });
-              if (semgrepResult.provenance?.version) {
-                scanRecord.toolVersions.semgrep = semgrepResult.provenance.version;
-              }
-
-              if (semgrepResult.success || semgrepResult.status === 'COMPLETED') {
-                scanRecord.summary.scannersRun.push('semgrep');
-                semgrepExecuted = true;
-                rawFindings.push(...(semgrepResult.findings || []));
-                recordEvent(scanRecord, SCAN_STATES.SCANNING, 'SUCCESS', `Semgrep completed with ${semgrepResult.findings?.length || 0} finding(s)`);
-              } else {
-                // Semgrep executed but reported failure status
-                const errMsg = semgrepResult.errors?.[0] || 'Semgrep scan completed with error status';
-                scanRecord.summary.scannersFailed.push({ scanner: 'semgrep', error: errMsg });
-                recordEvent(scanRecord, SCAN_STATES.SCANNING, 'FAILED', `Semgrep scanner reported error: ${errMsg}`);
-              }
-            } else {
-              // Semgrep CLI not installed on host PATH
-              scanRecord.summary.scannersFailed.push({
+            if (!semgrepAvailable) {
+              const errMsg = 'Semgrep binary unavailable on host environment';
+              return {
                 scanner: 'semgrep',
-                error: 'Semgrep binary unavailable on host environment'
-              });
-              recordEvent(scanRecord, SCAN_STATES.SCANNING, 'SKIPPED', 'Semgrep binary not detected on PATH; skipped Semgrep pass');
+                status: 'FAILED',
+                findings: [],
+                errors: [errMsg],
+                durationMs: Date.now() - start,
+                toolVersion: null,
+                diagnostic: 'Semgrep binary not detected on PATH; skipped Semgrep pass'
+              };
+            }
+
+            const semgrepResult = await this.semgrep.scanWithSemgrep(resolvedWorkspace, { scanId });
+            const durationMs = semgrepResult.durationMs || (Date.now() - start);
+            const toolVersion = semgrepResult.provenance?.version || null;
+
+            if (semgrepResult.success || semgrepResult.status === 'COMPLETED') {
+              return {
+                scanner: 'semgrep',
+                status: 'COMPLETED',
+                findings: semgrepResult.findings || [],
+                errors: [],
+                durationMs,
+                toolVersion,
+                diagnostic: null
+              };
+            } else {
+              const rawErr = semgrepResult.errors?.[0] || 'Semgrep scan completed with error status';
+              const sanitizedErr = sanitizeErrorMessage(rawErr);
+              return {
+                scanner: 'semgrep',
+                status: 'FAILED',
+                findings: semgrepResult.findings || [],
+                errors: [sanitizedErr],
+                durationMs,
+                toolVersion,
+                diagnostic: sanitizedErr
+              };
             }
           } catch (semgrepErr) {
-            scanRecord.summary.scannersFailed.push({ scanner: 'semgrep', error: semgrepErr.message });
-            recordEvent(scanRecord, SCAN_STATES.SCANNING, 'FAILED', `Semgrep execution crash: ${semgrepErr.message}`);
+            const sanitizedErr = sanitizeErrorMessage(semgrepErr);
+            return {
+              scanner: 'semgrep',
+              status: 'FAILED',
+              findings: [],
+              errors: [sanitizedErr],
+              durationMs: Date.now() - start,
+              toolVersion: null,
+              diagnostic: sanitizedErr
+            };
+          }
+        };
+
+        // Scanner B Task: npm Dependency Audit
+        const runNpmAuditTask = async () => {
+          const start = Date.now();
+          recordEvent(scanRecord, SCAN_STATES.SCANNING, 'IN_PROGRESS', 'Executing npm dependency audit scanner');
+
+          try {
+            const auditResult = await this.npmAudit.scanWorkspace(resolvedWorkspace, { scanId });
+            const durationMs = auditResult.durationMs || (Date.now() - start);
+            let version = null;
+            try {
+              version = await this.npmAudit.getVersion();
+            } catch (_) {}
+
+            if (auditResult.success || auditResult.status === 'COMPLETED') {
+              const findings = auditResult.findings || [];
+              const skipped = auditResult.metadata?.skipped;
+              const errors = (auditResult.errors || []).map(sanitizeErrorMessage);
+
+              return {
+                scanner: 'npm-audit',
+                status: 'COMPLETED',
+                findings,
+                errors,
+                durationMs,
+                toolVersion: version,
+                diagnostic: skipped ? (auditResult.metadata?.reason || 'Skipped: no package manifest') : null
+              };
+            } else {
+              const rawErr = auditResult.errors?.[0] || 'npm audit execution failed';
+              const sanitizedErr = sanitizeErrorMessage(rawErr);
+              return {
+                scanner: 'npm-audit',
+                status: 'FAILED',
+                findings: auditResult.findings || [],
+                errors: [sanitizedErr],
+                durationMs,
+                toolVersion: version,
+                diagnostic: sanitizedErr
+              };
+            }
+          } catch (auditErr) {
+            const sanitizedErr = sanitizeErrorMessage(auditErr);
+            return {
+              scanner: 'npm-audit',
+              status: 'FAILED',
+              findings: [],
+              errors: [sanitizedErr],
+              durationMs: Date.now() - start,
+              toolVersion: null,
+              diagnostic: sanitizedErr
+            };
+          }
+        };
+
+        // Scanner C Task: Deterministic Pattern SAST
+        const runPatternsTask = async () => {
+          const start = Date.now();
+          recordEvent(scanRecord, SCAN_STATES.SCANNING, 'IN_PROGRESS', 'Executing deterministic pattern scanner');
+
+          try {
+            const patternFindings = scanWithDeterministicPatterns(resolvedWorkspace, inventory.sourceFiles, scanId);
+            return {
+              scanner: 'pattern-sast',
+              status: 'COMPLETED',
+              findings: patternFindings,
+              errors: [],
+              durationMs: Date.now() - start,
+              toolVersion: '1.0.0',
+              diagnostic: null
+            };
+          } catch (patternErr) {
+            const sanitizedErr = sanitizeErrorMessage(patternErr);
+            return {
+              scanner: 'pattern-sast',
+              status: 'FAILED',
+              findings: [],
+              errors: [sanitizedErr],
+              durationMs: Date.now() - start,
+              toolVersion: null,
+              diagnostic: sanitizedErr
+            };
+          }
+        };
+
+        const scannerTasks = [];
+        if (shouldRunSemgrep) scannerTasks.push(runSemgrepTask());
+        if (shouldRunNpmAudit) scannerTasks.push(runNpmAuditTask());
+        if (shouldRunPatterns) scannerTasks.push(runPatternsTask());
+
+        // Handle explicitly requested unrecognized scanners
+        for (const scannerName of configuredScanners) {
+          const norm = scannerName.toLowerCase().trim();
+          if (
+            !['semgrep', 'semgrep-sast', 'sast'].includes(norm) &&
+            !['npm-audit', 'npm_audit', 'npm', 'dependency-audit', 'dependency_audit', 'audit'].includes(norm) &&
+            !['patterns', 'pattern-sast', 'pattern'].includes(norm)
+          ) {
+            scannerTasks.push(Promise.resolve({
+              scanner: scannerName,
+              status: 'FAILED',
+              findings: [],
+              errors: [`Unrecognized scanner engine: ${scannerName}`],
+              durationMs: 0,
+              toolVersion: null,
+              diagnostic: `Scanner '${scannerName}' is not supported`
+            }));
           }
         }
 
-        // Scanner B: Pattern-based SAST engine
-        if (configuredScanners.includes('patterns')) {
-          recordEvent(scanRecord, SCAN_STATES.SCANNING, 'IN_PROGRESS', 'Executing deterministic pattern scanner');
-          try {
-            const patternFindings = scanWithDeterministicPatterns(resolvedWorkspace, inventory.sourceFiles, scanId);
-            scanRecord.summary.scannersRun.push('pattern-sast');
-            scanRecord.toolVersions['pattern-sast'] = '1.0.0';
-            rawFindings.push(...patternFindings);
-            recordEvent(scanRecord, SCAN_STATES.SCANNING, 'SUCCESS', `Pattern scanner completed with ${patternFindings.length} finding(s)`);
-          } catch (patternErr) {
-            scanRecord.summary.scannersFailed.push({ scanner: 'pattern-sast', error: patternErr.message });
-            recordEvent(scanRecord, SCAN_STATES.SCANNING, 'FAILED', `Pattern scanner failed: ${patternErr.message}`);
+        const outcomes = await Promise.allSettled(scannerTasks);
+
+        for (const res of outcomes) {
+          const outcome = res.status === 'fulfilled'
+            ? res.value
+            : {
+                scanner: 'unknown',
+                status: 'FAILED',
+                findings: [],
+                errors: [sanitizeErrorMessage(res.reason)],
+                durationMs: 0,
+                toolVersion: null,
+                diagnostic: sanitizeErrorMessage(res.reason)
+              };
+
+          const { scanner, status, findings, errors, durationMs, toolVersion, diagnostic } = outcome;
+
+          if (toolVersion) {
+            scanRecord.toolVersions[scanner] = toolVersion;
+          }
+
+          scanRecord.summary.scannerOutcomes[scanner] = {
+            status,
+            durationMs,
+            findingsCount: findings ? findings.length : 0,
+            errors,
+            diagnostic: diagnostic || null
+          };
+
+          const scannerLabel = scanner === 'semgrep'
+            ? 'Semgrep'
+            : (scanner === 'npm-audit' ? 'npm-audit' : (scanner === 'pattern-sast' ? 'Pattern' : scanner));
+
+          if (status === 'COMPLETED') {
+            scanRecord.summary.scannersRun.push(scanner);
+            if (findings && findings.length > 0) {
+              rawFindings.push(...findings);
+            }
+            recordEvent(
+              scanRecord,
+              SCAN_STATES.SCANNING,
+              'SUCCESS',
+              `${scannerLabel} completed with ${findings ? findings.length : 0} finding(s)`,
+              { durationMs, findingsCount: findings ? findings.length : 0 }
+            );
+          } else {
+            const primaryErr = errors[0] || `${scanner} scan failed`;
+            scanRecord.summary.scannersFailed.push({ scanner, error: primaryErr });
+
+            // Preserve any partial findings salvaged despite non-zero exit:
+            if (findings && findings.length > 0) {
+              rawFindings.push(...findings);
+            }
+
+            if (diagnostic && diagnostic.includes('not detected on PATH')) {
+              recordEvent(
+                scanRecord,
+                SCAN_STATES.SCANNING,
+                'SKIPPED',
+                'Semgrep binary not detected on PATH; skipped Semgrep pass',
+                { durationMs, error: primaryErr }
+              );
+            } else {
+              recordEvent(
+                scanRecord,
+                SCAN_STATES.SCANNING,
+                'FAILED',
+                `${scannerLabel} scanner reported error: ${primaryErr}`,
+                { durationMs, error: primaryErr }
+              );
+            }
           }
         }
 
@@ -354,15 +584,18 @@ class ScanOrchestrator {
 
         for (const raw of rawFindings) {
           // Normalize coordinates and paths
-          const cleanPath = (raw.filePath || raw.file || 'unknown.js').replace(/\\/g, '/');
+          const rawPath = raw.filePath || raw.file || raw.path || 'unknown.js';
+          const cleanPath = String(rawPath).replace(/\\/g, '/').replace(/^\/+/, '');
           const startLine = Math.max(1, parseInt(raw.startLine, 10) || 1);
           const endLine = Math.max(startLine, parseInt(raw.endLine, 10) || startLine);
           const evidence = typeof raw.evidence === 'string'
             ? raw.evidence
-            : (raw.codeSnippet || JSON.stringify(raw.evidence || ''));
+            : (raw.codeSnippet || (raw.evidence ? JSON.stringify(raw.evidence) : ''));
+
+          const ruleId = raw.ruleId || raw.rule || raw.check_id || 'generic.security.rule';
 
           const fingerprint = raw.fingerprint || generateFingerprint({
-            ruleId: raw.ruleId || 'generic.rule',
+            ruleId,
             filePath: cleanPath,
             evidence
           });
@@ -377,13 +610,21 @@ class ScanOrchestrator {
             ? raw.id
             : `find_${crypto.randomBytes(6).toString('hex')}`;
 
+          const validCategories = [
+            'SQL_INJECTION', 'XSS', 'HARDCODED_SECRET', 'VULNERABLE_DEPENDENCY',
+            'COMMAND_INJECTION', 'PATH_TRAVERSAL', 'INJECTION', 'BROKEN_AUTH',
+            'SENSITIVE_DATA_EXPOSURE', 'SECURITY_MISCONFIG', 'OTHER'
+          ];
+          const rawCat = raw.category ? String(raw.category).toUpperCase() : 'OTHER';
+          const category = validCategories.includes(rawCat) ? rawCat : 'OTHER';
+
           const canonicalFinding = {
             id: findingId,
             scanId,
             scanner: raw.scanner || 'semgrep',
-            ruleId: raw.ruleId || 'generic.security.rule',
+            ruleId,
             title: raw.title || raw.name || 'Security Finding',
-            category: raw.category || 'OTHER',
+            category,
             severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(raw.severity)
               ? raw.severity
               : 'MEDIUM',
@@ -644,5 +885,6 @@ module.exports = {
   ScanOrchestrator,
   scanOrchestrator,
   generateFingerprint,
-  recordEvent
+  recordEvent,
+  sanitizeErrorMessage
 };

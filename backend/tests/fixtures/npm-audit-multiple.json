@@ -1,0 +1,91 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "minimist": {
+      "name": "minimist",
+      "severity": "critical",
+      "isDirect": false,
+      "via": [
+        {
+          "source": 1096464,
+          "name": "minimist",
+          "dependency": "minimist",
+          "title": "Prototype Pollution in minimist",
+          "url": "https://github.com/advisories/GHSA-vh95-rmgr-6w4m",
+          "severity": "critical",
+          "cwe": [
+            "CWE-1321"
+          ],
+          "cvss": {
+            "score": 9.8,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+          },
+          "range": "<0.2.1 || >=1.0.0 <1.2.3"
+        }
+      ],
+      "effects": [
+        "mkdirp"
+      ],
+      "range": "<0.2.1 || >=1.0.0 <1.2.3",
+      "nodes": [
+        "node_modules/mkdirp/node_modules/minimist"
+      ],
+      "fixAvailable": {
+        "name": "mkdirp",
+        "version": "1.0.4",
+        "isSemVerMajor": true
+      }
+    },
+    "axios": {
+      "name": "axios",
+      "severity": "high",
+      "isDirect": true,
+      "via": [
+        {
+          "source": 1094562,
+          "name": "axios",
+          "dependency": "axios",
+          "title": "Server-Side Request Forgery in axios",
+          "url": "https://github.com/advisories/GHSA-42xw-2xvc-bb8x",
+          "severity": "high",
+          "cwe": [
+            "CWE-918"
+          ],
+          "cvss": {
+            "score": 7.5,
+            "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"
+          },
+          "range": "<0.21.1"
+        }
+      ],
+      "effects": [],
+      "range": "<0.21.1",
+      "nodes": [
+        "node_modules/axios"
+      ],
+      "fixAvailable": {
+        "name": "axios",
+        "version": "0.21.1",
+        "isSemVerMajor": false
+      }
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 1,
+      "critical": 1,
+      "total": 2
+    },
+    "dependencies": {
+      "prod": 15,
+      "dev": 0,
+      "optional": 0,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 15
+    }
+  }
+}
