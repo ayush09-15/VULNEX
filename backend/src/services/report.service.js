@@ -48,10 +48,22 @@ function buildVerificationChecks(verification, patch) {
     : 'NOT_RUN';
 
   const comparison = verification?.beforeAfterComparison;
-  const isAmbiguous = Boolean(comparison?.ambiguousMatch || comparison?.comparisonOutcome === 'AMBIGUOUS');
+  const isScannerUnavailable = Boolean(
+    verification?.scannerResults?.scannerUnavailable ||
+    verification?.scannerResults?.status === 'SCANNER_UNAVAILABLE' ||
+    comparison?.comparisonOutcome === 'SCANNER_UNAVAILABLE'
+  );
+  const isAmbiguous = Boolean(
+    comparison?.ambiguousMatch ||
+    comparison?.comparisonOutcome === 'AMBIGUOUS' ||
+    comparison?.comparisonOutcome === 'INCONCLUSIVE' ||
+    isScannerUnavailable
+  );
 
   const rescanStatus = verification?.scannerResults
-    ? isAmbiguous
+    ? isScannerUnavailable
+      ? 'INCONCLUSIVE'
+      : isAmbiguous
       ? 'INCONCLUSIVE'
       : verification.scannerResults.originalFindingResolved
       ? 'PASSED'
@@ -59,7 +71,9 @@ function buildVerificationChecks(verification, patch) {
     : 'NOT_RUN';
 
   const regressionStatus = verification?.scannerResults
-    ? isAmbiguous
+    ? isScannerUnavailable
+      ? 'INCONCLUSIVE'
+      : isAmbiguous
       ? 'INCONCLUSIVE'
       : (comparison?.regressionDetected || verification.scannerResults.newFindingsCount > 0)
       ? 'FAILED'

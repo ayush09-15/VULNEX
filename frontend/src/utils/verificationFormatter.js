@@ -26,6 +26,12 @@ export const VERIFICATION_STATUS_CONFIG = {
     badgeClass: 'bg-amber-950/80 text-amber-300 border-amber-700/60',
     description: 'Check was inconclusive due to ambiguous fingerprint matching or scanner uncertainty.',
   },
+  PARTIAL: {
+    label: 'PARTIAL',
+    color: 'amber',
+    badgeClass: 'bg-amber-950/80 text-amber-300 border-amber-700/60',
+    description: 'Some verification checks passed but required checks were unexecuted or incomplete.',
+  },
   NOT_RUN: {
     label: 'NOT RUN',
     color: 'slate',
@@ -35,16 +41,17 @@ export const VERIFICATION_STATUS_CONFIG = {
 };
 
 /**
- * Normalizes a status string to canonical PASSED | FAILED | INCONCLUSIVE | NOT_RUN
+ * Normalizes a status string to canonical PASSED | FAILED | INCONCLUSIVE | NOT_RUN | PARTIAL
  * @param {string} raw
- * @returns {'PASSED' | 'FAILED' | 'INCONCLUSIVE' | 'NOT_RUN'}
+ * @returns {'PASSED' | 'FAILED' | 'INCONCLUSIVE' | 'NOT_RUN' | 'PARTIAL'}
  */
 export function normalizeCheckStatus(raw) {
   if (!raw) return 'NOT_RUN';
   const upper = String(raw).toUpperCase().trim();
   if (['PASSED', 'VERIFIED', 'RESOLVED', 'SUCCESS'].includes(upper)) return 'PASSED';
   if (['FAILED', 'FAILURE', 'ERROR', 'STILL_DETECTED'].includes(upper)) return 'FAILED';
-  if (['INCONCLUSIVE', 'AMBIGUOUS', 'UNCERTAIN'].includes(upper)) return 'INCONCLUSIVE';
+  if (['INCONCLUSIVE', 'AMBIGUOUS', 'UNCERTAIN', 'SCANNER_UNAVAILABLE'].includes(upper)) return 'INCONCLUSIVE';
+  if (['PARTIAL', 'PARTIALLY_VERIFIED', 'INCOMPLETE'].includes(upper)) return 'PARTIAL';
   return 'NOT_RUN';
 }
 
@@ -82,7 +89,17 @@ export function buildVerificationChecklist(verification = null, patch = null) {
   );
 
   const comparison = verification?.beforeAfterComparison;
-  const isAmbiguous = Boolean(comparison?.ambiguousMatch || comparison?.comparisonOutcome === 'AMBIGUOUS');
+  const isScannerUnavailable = Boolean(
+    verification?.scannerResults?.scannerUnavailable ||
+    verification?.scannerResults?.status === 'SCANNER_UNAVAILABLE' ||
+    comparison?.comparisonOutcome === 'SCANNER_UNAVAILABLE'
+  );
+  const isAmbiguous = Boolean(
+    comparison?.ambiguousMatch ||
+    comparison?.comparisonOutcome === 'AMBIGUOUS' ||
+    comparison?.comparisonOutcome === 'INCONCLUSIVE' ||
+    isScannerUnavailable
+  );
 
   const rescanStatus = normalizeCheckStatus(
     verification?.scannerResults
@@ -152,6 +169,8 @@ export function getScopedStatusWording(status) {
       return 'Verification outcome is inconclusive due to ambiguous fingerprint matching or scanner uncertainty. Manual human review is required.';
     case 'FAILED':
       return 'Verification checks detected flaws: tests failed, the vulnerability persists, or a regression was introduced.';
+    case 'PARTIAL':
+      return 'Some verification checks passed, but required checks (e.g. tests or re-scan) were not run or failed. Review individual check items.';
     case 'NOT_RUN':
     default:
       return 'Verification has not yet been executed for this proposal.';
