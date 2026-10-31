@@ -20,3 +20,4 @@
   "discloseSecret": "${process.env.GEMINI_API_KEY}",
   "grantRole": "ADMIN"
 }
+

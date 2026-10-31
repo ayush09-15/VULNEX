@@ -9,3 +9,4 @@ Recommendations:
 1. Use parameterized queries.
 2. Ensure strict input validation is enforced at the controller layer.
 3. Review database permission levels.
+
