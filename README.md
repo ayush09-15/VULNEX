@@ -10,7 +10,7 @@ VULNEX bridges the gap between static vulnerability detection and verified code 
 
 Watch the complete demonstration of VULNEX in action:
 
-**[▶️ Watch the VULNEX Walkthrough Video]([https://drive.google.com/file/d/1CQc6Sr95KVtnjSRqT4ggeEus2iiJKi7_/view?usp=drivesdk](https://www.youtube.com/watch?v=I3woCLfEXdM)**
+**[▶️ Watch the VULNEX Walkthrough Video](https://www.youtube.com/watch?v=I3woCLfEXdM)**
 
 ---
 
