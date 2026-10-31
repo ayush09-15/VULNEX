@@ -312,3 +312,4 @@ module.exports = {
   semgrepProcessWrapper: semgrepProcessWrapperInstance,
   executeSemgrepProcess
 };
+
