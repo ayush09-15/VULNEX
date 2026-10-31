@@ -1,0 +1,17 @@
+{
+  "diff": "--- a/src/routes/user.js\n+++ b/src/routes/user.js\n@@ -42,2 +42,2 @@\n-  const query = `SELECT * FROM users WHERE id = ${id}`;\n-  const result = await db.query(query);\n+  const query = 'SELECT * FROM users WHERE id = $1';\n+  const result = await db.query(query, [id]);\n",
+  "rationale": {
+    "rootCause": "Untrusted request parameter 'id' is directly interpolated into dynamic SQL statement without parameter binding.",
+    "proposedCorrection": "Replaced template literal interpolation with parameterized SQL query placeholder ($1) and query argument array.",
+    "explanation": "Parameterized queries ensure user input is treated strictly as literal data by the database engine, completely neutralizing SQL injection."
+  },
+  "changedFiles": [
+    "src/routes/user.js"
+  ],
+  "evidenceReferences": [
+    {
+      "type": "SNIPPET",
+      "reference": "const query = `SELECT * FROM users WHERE id = ${id}`;"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "diff": "--- a/package.json\n+++ b/package.json\n@@ -10,3 +10,3 @@\n-    \"express\": \"^4.18.2\"\n+    \"express\": \"^5.0.0\"\n",
+  "rationale": {
+    "rootCause": "Vulnerable dependency",
+    "proposedCorrection": "Upgraded express in package.json",
+    "explanation": "Upgraded framework version"
+  },
+  "changedFiles": [
+    "package.json"
+  ],
+  "evidenceReferences": [
+    {
+      "type": "SNIPPET",
+      "reference": "const query = `SELECT * FROM users WHERE id = ${id}`;"
+    }
+  ]
+}

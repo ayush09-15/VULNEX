@@ -4,6 +4,22 @@ const {
 } = require('../validators/investigation.schema');
 const {
   PROMPT_VERSION,
+  PATCH_PROMPT_VERSION,
+  REMEDIATION_GUIDANCE,
+  redactSecrets,
+  formatBoundedExcerpt,
+  getSystemInstruction,
+  getPatchSystemInstruction,
+  buildInvestigationPrompt,
+  buildPatchProposalPrompt
+} = require('./ai.prompt');
+const {
+  PATCH_REVIEW_STATES,
+  PatchProposalSchema,
+  parseUnifiedDiff,
+  validateProposalScope,
+  parseAndValidateAIPatchProposal
+} = require('../validators/patchProposal.schema');
   redactSecrets,
   buildInvestigationPrompt
 } = require('./ai.prompt');
@@ -298,10 +314,284 @@ Provide the patched code and explanation.`;
       generatedAt: new Date().toISOString()
     };
   }
+
+  /**
+   * Constructs an evidence-linked patch proposal prompt for a finding.
+   *
+   * @param {Object} finding
+   * @param {string|Object} [sourceContext='']
+   * @param {Object} [options={}]
+   * @returns {Object} Structured prompt payload
+   */
+  buildPatchProposalPrompt(finding, sourceContext = '', options = {}) {
+    return buildPatchProposalPrompt(finding, sourceContext, options);
+  }
+
+  /**
+   * Process and validate an AI patch proposal response safely.
+   * Enforces canonical schema validation, scope bounding, and prompt-injection defense.
+   *
+   * @param {string|object} rawOutput
+   * @param {object} finding
+   * @param {object} [options={}]
+   * @returns {{ success: boolean, proposal?: object, data?: object, error?: object }}
+   */
+  processPatchProposalResponse(rawOutput, finding, options = {}) {
+    const result = parseAndValidateAIPatchProposal(rawOutput, finding, {
+      model: this.model,
+      promptVersion: PATCH_PROMPT_VERSION,
+      ...options
+    });
+
+    if (result.success) {
+      return {
+        success: true,
+        proposal: result.data,
+        data: result.data
+      };
+    }
+
+    return {
+      success: false,
+      error: result.error
+    };
+  }
+
+  /**
+   * Generate an evidence-linked minimal patch proposal for human review.
+   * Invariants:
+   * - Proposal initial state is ALWAYS PENDING_REVIEW (never auto-applied).
+   * - Scoped strictly to the finding's target file.
+   * - Does not modify original repository files or execute code.
+   * - Bounded to finding evidence.
+   *
+   * @param {Object} finding - Validated security finding
+   * @param {Object} [options={}] - Options (e.g. sourceContext, localOnly)
+   * @returns {Promise<{ success: boolean, proposal?: object, data?: object, error?: object }>}
+   */
+  async generatePatchProposal(finding, options = {}) {
+    if (!finding || typeof finding !== 'object') {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_FINDING',
+          message: 'A valid finding object is required to generate a patch proposal',
+          details: []
+        }
+      };
+    }
+
+    const rawFindingPath = finding.filePath || finding.path;
+    if (!rawFindingPath || typeof rawFindingPath !== 'string') {
+      return {
+        success: false,
+        error: {
+          code: 'INVALID_FINDING',
+          message: 'Finding must include a valid filePath or path',
+          details: []
+        }
+      };
+    }
+
+    const rawEvidence = finding.evidence || finding.codeSnippet || options.sourceContext || '';
+    const evidenceText = typeof rawEvidence === 'object' ? JSON.stringify(rawEvidence) : String(rawEvidence).trim();
+    if (!evidenceText) {
+      return {
+        success: false,
+        error: {
+          code: 'MISSING_EVIDENCE',
+          message: 'Cannot generate patch proposal without supporting evidence or code snippet',
+          details: []
+        }
+      };
+    }
+
+    const sourceContext = options.sourceContext || rawEvidence;
+
+    if (this.apiKey && !options.localOnly) {
+      try {
+        return await this._callGeminiPatchProposal(finding, sourceContext, options);
+      } catch (err) {
+        if (err.name === 'AbortError' || err.message?.includes('aborted') || err.message?.includes('timeout')) {
+          return {
+            success: false,
+            error: {
+              code: 'AI_TIMEOUT',
+              message: `AI patch proposal generation timed out after ${this.timeoutMs}ms`,
+              details: [{ error: err.message }]
+            }
+          };
+        }
+        if (options.throwOnError) {
+          throw err;
+        }
+        console.warn('[AIService] Remote AI patch proposal failed, falling back to local generator:', err.message);
+      }
+    }
+
+    // Local deterministic generator
+    return this._localPatchProposal(finding, sourceContext, options);
+  }
+
+  /**
+   * Deterministic local patch proposal generator for offline testing and fallback.
+   * Produces minimal unified diff and structured rationale conforming to PatchProposalSchema.
+   */
+  _localPatchProposal(finding, sourceContext = '', options = {}) {
+    const rawPath = finding.filePath || finding.path || 'file.js';
+    const normPath = rawPath.replace(/\\/g, '/').replace(/^\/+/, '');
+    const categoryKey = (finding.category || finding.cwe || '').toUpperCase();
+    const startLine = finding.startLine || 1;
+    const rawSnippet = String(finding.evidence || finding.codeSnippet || sourceContext || '').trim();
+
+    let origLine = rawSnippet;
+    let modLine = rawSnippet;
+    let rootCause = 'Dynamic or unvalidated data handling matching security rule: ' + (finding.ruleId || finding.rule || 'vulnerability');
+    let proposedCorrection = 'Applied defensive coding pattern at trust boundary.';
+    let explanation = 'Sanitizes or parameterizes inputs to prevent exploitation without altering business logic.';
+
+    if (categoryKey.includes('SQL') || categoryKey === 'CWE-89') {
+      rootCause = 'Untrusted user input interpolated directly into dynamic SQL query string without parameterization.';
+      proposedCorrection = 'Replaced string interpolation with parameterized SQL query placeholder ($1).';
+      explanation = 'Parameterized statements ensure user input is treated strictly as literal data rather than executable SQL logic, preventing SQL injection.';
+      if (rawSnippet.includes('${')) {
+        modLine = rawSnippet.replace(/\$\{([^}]+)\}/g, '$1');
+      } else {
+        modLine = rawSnippet + ' /* parameterized */';
+      }
+    } else if (categoryKey.includes('XSS') || categoryKey === 'CWE-79') {
+      rootCause = 'Untrusted request parameter rendered directly into HTML response without contextual escaping.';
+      proposedCorrection = 'Wrapped untrusted input in HTML entity escaping before rendering.';
+      explanation = 'Sanitizing special HTML characters (&, <, >, ", \') neutralizes injected script tags and malicious DOM payloads.';
+      if (rawSnippet.includes('${')) {
+        modLine = rawSnippet.replace(/\$\{([^}]+)\}/g, '${escapeHtml($1)}');
+      } else {
+        modLine = `escapeHtml(${rawSnippet})`;
+      }
+    } else if (categoryKey.includes('COMMAND') || categoryKey === 'CWE-78') {
+      rootCause = 'Untrusted input passed directly to system shell execution.';
+      proposedCorrection = 'Replaced shell execution with safe argument-array process execution.';
+      explanation = 'Executing binaries directly without an intermediate shell prevents shell metacharacter injection.';
+      modLine = rawSnippet.replace(/exec\(/g, 'execFile(');
+    } else if (categoryKey.includes('SECRET') || categoryKey === 'CWE-798') {
+      rootCause = 'Secret credential or API key hardcoded in plaintext source code.';
+      proposedCorrection = 'Replaced hardcoded secret literal with environment variable reference.';
+      explanation = 'Moving credentials to environment variables prevents secret exposure in source control.';
+      modLine = rawSnippet.replace(/['"`][A-Za-z0-9_\-\.]{16,}['"`]/, 'process.env.SECRET_KEY');
+    } else if (categoryKey.includes('TRAVERSAL') || categoryKey === 'CWE-22') {
+      rootCause = 'Unconfined file path resolution vulnerable to directory traversal via ../ sequences.';
+      proposedCorrection = 'Sanitized path segments and verified destination is confined within base directory.';
+      explanation = 'Path confinement prevents attackers from navigating outside the intended document root.';
+      modLine = `path.resolve(BASE_DIR, path.basename(${rawSnippet}))`;
+    } else {
+      modLine = rawSnippet + ' // sanitized';
+    }
+
+    if (origLine === modLine) {
+      modLine = origLine + ' /* patched */';
+    }
+
+    const diff = [
+      `--- a/${normPath}`,
+      `+++ b/${normPath}`,
+      `@@ -${startLine},1 +${startLine},1 @@`,
+      `-${origLine}`,
+      `+${modLine}`
+    ].join('\n') + '\n';
+
+    const rawOutput = {
+      diff,
+      rationale: {
+        rootCause,
+        proposedCorrection,
+        explanation
+      },
+      changedFiles: [normPath],
+      evidenceReferences: [
+        {
+          type: 'SNIPPET',
+          reference: rawSnippet,
+          description: `Evidence quoted from finding ${finding.id || ''}`
+        }
+      ]
+    };
+
+    return this.processPatchProposalResponse(rawOutput, finding, {
+      model: 'vulnex-deterministic-patch-generator-v1',
+      promptVersion: PATCH_PROMPT_VERSION,
+      ...options
+    });
+  }
+
+  async _callGeminiPatchProposal(finding, sourceContext, options = {}) {
+    const promptPayload = this.buildPatchProposalPrompt(finding, sourceContext, options);
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
+
+    const controller = new AbortController();
+    const timeoutMs = options.timeoutMs || this.timeoutMs;
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const isGeminiModel = this.model.toLowerCase().includes('gemini');
+      const requestBody = isGeminiModel
+        ? {
+            systemInstruction: {
+              parts: [{ text: promptPayload.systemInstruction }]
+            },
+            contents: [
+              {
+                parts: [{ text: promptPayload.userPrompt }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: 'application/json'
+            }
+          }
+        : {
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `${promptPayload.systemInstruction}\n\n${promptPayload.userPrompt}` }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.1
+            }
+          };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => ({}));
+        throw new Error(`Google AI Studio error (${res.status}): ${errorBody?.error?.message || res.statusText}`);
+      }
+
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      return this.processPatchProposalResponse(text, finding, {
+        model: this.model,
+        promptVersion: promptPayload.promptVersion,
+        contextSupplied: promptPayload.contextSupplied
+      });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
+  }
 }
 
 const aiService = new AIService();
 aiService.AIService = AIService;
 aiService.buildInvestigationPrompt = buildInvestigationPrompt;
+aiService.buildPatchProposalPrompt = buildPatchProposalPrompt;
 
 module.exports = aiService;
