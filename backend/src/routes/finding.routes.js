@@ -357,7 +357,17 @@ router.post('/:id/apply-patch', async (req, res) => {
     }
 
     const { approved, confirm, approverComments, patchedCode, workspacePath } = req.body || {};
-    const patch = patchService.getPatchByFindingId(findingId) || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
+
+    // Explicit Confirmation Gate (Commit 34 Invariant)
+    if (approved !== true && confirm !== true) {
+      return apiResponse.error(res, {
+        code: 'APPROVAL_REQUIRED',
+        message: 'Patch application requires explicit user approval (approved: true).'
+      }, 403);
+    }
+
+    const patch = (typeof patchService.getPatchByFindingId === 'function' ? patchService.getPatchByFindingId(findingId) : null)
+      || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
 
     if (patch) {
       const result = await patchService.applyPatchToDisposableWorkspace({
