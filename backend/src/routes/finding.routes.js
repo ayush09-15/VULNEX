@@ -190,15 +190,82 @@ router.post('/:id/analyze', async (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// POST /api/findings/:id/generate-patch - Generate AI patch
+// POST /api/findings/:id/patches - Generate AI patch proposal (Section 4.7 canonical)
 // ----------------------------------------------------------------------------
-router.post(['/:id/patches', '/:id/generate-patch'], async (req, res) => {
+router.post('/:id/patches', async (req, res) => {
   try {
-    const finding = scanOrchestrator.getFindingById(req.params.id) || scannerService.getFindingById(req.params.id);
+    const findingId = req.params.id;
+    const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
     if (!finding) {
       return apiResponse.error(res, {
         code: 'FINDING_NOT_FOUND',
-        message: `Finding '${req.params.id}' not found.`
+        message: `Finding '${findingId}' not found.`
+      }, 404);
+    }
+
+    const aiService = require('../services/ai.service');
+    const sourceContext = req.body?.sourceContext || req.body?.originalCode || finding.evidence || finding.codeSnippet || '';
+
+    // Generate proposal via AI Service
+    let patchProposal;
+    if (typeof aiService.generatePatchProposal === 'function') {
+      const proposalResult = await aiService.generatePatchProposal(finding, { sourceContext });
+      patchProposal = proposalResult?.proposal || proposalResult?.data;
+    }
+
+    if (!patchProposal) {
+      const patchResult = await aiService.generatePatch(finding, sourceContext);
+      const diff = patchService.createUnifiedDiff({
+        filename: finding.filePath || finding.file || 'unknown.js',
+        originalContent: patchResult.originalCode,
+        patchedContent: patchResult.patchedCode
+      });
+      patchProposal = {
+        findingId: finding.id,
+        diff,
+        rationale: patchResult.explanation || 'Applied defensive security fix.',
+        changedFiles: [finding.filePath || finding.file || 'unknown.js'],
+        evidenceReferences: [finding.fingerprint || `${finding.filePath || 'file'}#L${finding.startLine || 1}`]
+      };
+    }
+
+    // Persist patch entity in patchService
+    const savedPatch = patchService.savePatch({
+      ...patchProposal,
+      findingId: finding.id,
+      status: 'GENERATED'
+    });
+
+    // Update finding state to PATCH_PROPOSED
+    const updatedFinding = {
+      ...finding,
+      status: 'PATCH_PROPOSED',
+      patchId: savedPatch.id,
+      proposedPatch: savedPatch
+    };
+    scanOrchestrator.updateFinding(finding.id, updatedFinding);
+    scannerService.updateFinding(finding.id, updatedFinding);
+
+    return apiResponse.success(res, savedPatch, 200);
+  } catch (err) {
+    return apiResponse.error(res, {
+      code: 'PATCH_GENERATION_FAILED',
+      message: err.message || 'Failed to generate patch proposal.'
+    }, 500);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/findings/:id/generate-patch - Alias for /api/findings/:id/patches
+// ----------------------------------------------------------------------------
+router.post('/:id/generate-patch', async (req, res) => {
+  try {
+    const findingId = req.params.id;
+    const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
+    if (!finding) {
+      return apiResponse.error(res, {
+        code: 'FINDING_NOT_FOUND',
+        message: `Finding '${findingId}' not found.`
       }, 404);
     }
 
@@ -214,14 +281,23 @@ router.post(['/:id/patches', '/:id/generate-patch'], async (req, res) => {
 
     const preview = patchService.previewPatch(patchResult.originalCode, patchResult.patchedCode);
 
+    const savedPatch = patchService.savePatch({
+      findingId: finding.id,
+      diff,
+      rationale: patchResult.explanation || 'Applied defensive security fix.',
+      changedFiles: [finding.filePath || finding.file || 'unknown.js'],
+      status: 'GENERATED'
+    });
+
     const responseData = {
       ...patchResult,
+      id: savedPatch.id,
       diff,
       preview
     };
 
-    scannerService.updateFinding(req.params.id, { proposedPatch: responseData });
-    scanOrchestrator.updateFinding(req.params.id, { proposedPatch: responseData });
+    scannerService.updateFinding(req.params.id, { proposedPatch: responseData, status: 'PATCH_PROPOSED' });
+    scanOrchestrator.updateFinding(req.params.id, { proposedPatch: responseData, status: 'PATCH_PROPOSED' });
 
     return apiResponse.success(res, responseData, 200);
   } catch (err) {
@@ -267,30 +343,48 @@ router.post('/:id/verify-patch', async (req, res) => {
 });
 
 // ----------------------------------------------------------------------------
-// POST /api/findings/:id/apply-patch - Apply patch to disk
+// POST /api/findings/:id/apply-patch - Apply patch to disposable workspace
 // ----------------------------------------------------------------------------
 router.post('/:id/apply-patch', async (req, res) => {
   try {
-    const finding = scanOrchestrator.getFindingById(req.params.id) || scannerService.getFindingById(req.params.id);
+    const findingId = req.params.id;
+    const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
     if (!finding) {
       return apiResponse.error(res, {
         code: 'FINDING_NOT_FOUND',
-        message: `Finding '${req.params.id}' not found.`
+        message: `Finding '${findingId}' not found.`
       }, 404);
     }
 
-    if (req.body?.approved !== true) {
+    const { approved, confirm, approverComments, patchedCode, workspacePath } = req.body || {};
+
+    // Explicit Confirmation Gate (Commit 34 Invariant)
+    if (approved !== true && confirm !== true) {
       return apiResponse.error(res, {
         code: 'APPROVAL_REQUIRED',
         message: 'Patch application requires explicit user approval (approved: true).'
       }, 403);
     }
 
-    const patchedContent = req.body?.patchedCode || finding.proposedPatch?.patchedCode;
+    const patch = (typeof patchService.getPatchByFindingId === 'function' ? patchService.getPatchByFindingId(findingId) : null)
+      || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
+
+    if (patch) {
+      const result = await patchService.applyPatchToDisposableWorkspace({
+        patchId: patch.id,
+        approved,
+        confirm,
+        approverComments,
+        workspacePath
+      });
+      return apiResponse.success(res, result, 200);
+    }
+
+    const patchedContent = patchedCode || finding.proposedPatch?.patchedCode;
     if (!patchedContent) {
       return apiResponse.error(res, {
         code: 'MISSING_PATCH_CONTENT',
-        message: 'No patched code provided or proposed.'
+        message: 'No patched code or patch proposal found for this finding.'
       }, 400);
     }
 
@@ -299,15 +393,17 @@ router.post('/:id/apply-patch', async (req, res) => {
       patchedContent
     });
 
-    scannerService.updateFinding(req.params.id, { status: 'PATCH_APPLIED', resolvedAt: new Date().toISOString() });
-    scanOrchestrator.updateFinding(req.params.id, { status: 'PATCH_APPLIED', resolvedAt: new Date().toISOString() });
+    scannerService.updateFinding(findingId, { status: 'PATCH_APPLIED', resolvedAt: new Date().toISOString() });
+    scanOrchestrator.updateFinding(findingId, { status: 'PATCH_APPLIED', resolvedAt: new Date().toISOString() });
 
     return apiResponse.success(res, result, 200);
   } catch (err) {
+    const statusCode = err.statusCode || (err.code === 'CONFIRMATION_REQUIRED' || err.code === 'PATCH_VALIDATION_FAILED' ? 400 : 500);
     return apiResponse.error(res, {
-      code: 'PATCH_APPLICATION_FAILED',
-      message: err.message || 'Failed to apply patch.'
-    }, 500);
+      code: err.code || 'PATCH_APPLICATION_FAILED',
+      message: err.message || 'Failed to apply patch.',
+      details: err.details || []
+    }, statusCode);
   }
 });
 
@@ -316,24 +412,32 @@ router.post('/:id/apply-patch', async (req, res) => {
 // ----------------------------------------------------------------------------
 router.post('/:id/rollback', async (req, res) => {
   try {
-    const finding = scanOrchestrator.getFindingById(req.params.id) || scannerService.getFindingById(req.params.id);
+    const findingId = req.params.id;
+    const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
     if (!finding) {
       return apiResponse.error(res, {
         code: 'FINDING_NOT_FOUND',
-        message: `Finding '${req.params.id}' not found.`
+        message: `Finding '${findingId}' not found.`
       }, 404);
     }
 
+    const patch = patchService.getPatchByFindingId(findingId) || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
+    if (patch) {
+      const result = await patchService.rollbackPatch(patch.id);
+      return apiResponse.success(res, result, 200);
+    }
+
     const result = await patchService.rollbackPatch({ filePath: finding.filePath || finding.file });
-    scannerService.updateFinding(req.params.id, { status: 'DETECTED' });
-    scanOrchestrator.updateFinding(req.params.id, { status: 'DETECTED' });
+    scannerService.updateFinding(findingId, { status: 'DETECTED' });
+    scanOrchestrator.updateFinding(findingId, { status: 'DETECTED' });
 
     return apiResponse.success(res, result, 200);
   } catch (err) {
+    const statusCode = err.statusCode || 500;
     return apiResponse.error(res, {
-      code: 'PATCH_ROLLBACK_FAILED',
+      code: err.code || 'PATCH_ROLLBACK_FAILED',
       message: err.message || 'Failed to rollback patch.'
-    }, 500);
+    }, statusCode);
   }
 });
 
