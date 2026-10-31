@@ -2,6 +2,7 @@ const {
   parseAndValidateAIInvestigation,
   createFallbackInvestigation
 } = require('../validators/investigation.schema');
+const { safeLogger, redactString } = require('../utils/secretRedactor');
 const {
   PROMPT_VERSION,
   PATCH_PROMPT_VERSION,
@@ -78,7 +79,7 @@ class AIService {
       try {
         return await this._callGeminiAnalysis(finding, codeContext);
       } catch (err) {
-        console.warn('[AIService] Remote AI model call failed, falling back to local analysis:', err.message);
+        safeLogger.warn('[AIService] Remote AI model call failed, falling back to local analysis:', redactString(err.message));
 
         // If quota exceeded or timeout occurred, produce structured fallback with explicit limitation
         if (err instanceof AIQuotaExceededError || err instanceof AITimeoutError) {
@@ -145,7 +146,7 @@ class AIService {
       try {
         return await this._callGeminiPatch(finding, originalCode);
       } catch (err) {
-        console.warn('[AIService] Remote AI call failed, falling back to local patch generator:', err.message);
+        safeLogger.warn('[AIService] Remote AI call failed, falling back to local patch generator:', redactString(err.message));
       }
     }
 
@@ -422,7 +423,7 @@ Provide the patched code and explanation.`;
         if (options.throwOnError) {
           throw err;
         }
-        console.warn('[AIService] Remote AI patch proposal failed, falling back to local generator:', err.message);
+        safeLogger.warn('[AIService] Remote AI patch proposal failed, falling back to local generator:', redactString(err.message));
       }
     }
 

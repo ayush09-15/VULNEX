@@ -1,4 +1,5 @@
 const apiResponse = require('../utils/apiResponse');
+const { redactString, redactDeep, safeLogger } = require('../utils/secretRedactor');
 
 /**
  * Centralized Error Handling Middleware
@@ -19,20 +20,23 @@ function errorHandler(err, req, res, next) {
 
   const code = err.code || (statusCode === 404 ? 'RESOURCE_NOT_FOUND' : 'INTERNAL_SERVER_ERROR');
 
-  // Provide safe human-readable message without leaking internal exceptions or stack traces
-  const message = (statusCode < 500 && err.message)
+  // Provide safe human-readable message without leaking internal exceptions, stack traces, or credentials
+  const rawMessage = (statusCode < 500 && err.message)
     ? err.message
     : 'An unexpected internal server error occurred.';
+  const message = redactString(rawMessage);
 
-  // Server-side logging only
-  console.error(`[Error] [${req.id || 'no-request-id'}] ${req.method} ${req.originalUrl || req.url}:`, err.message || err);
+  // Redacted server-side logging
+  const safePath = redactString(req.originalUrl || req.url || '');
+  const safeErrLog = err.message ? redactString(err.message) : err;
+  safeLogger.error(`[Error] [${req.id || 'no-request-id'}] ${req.method} ${safePath}:`, safeErrLog);
 
   return apiResponse.error(
     res,
     {
       code,
       message,
-      details: err.details || undefined
+      details: err.details ? redactDeep(err.details) : undefined
     },
     statusCode
   );
