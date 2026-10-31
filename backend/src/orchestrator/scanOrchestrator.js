@@ -870,6 +870,19 @@ class ScanOrchestrator {
   }
 
   /**
+   * Register or add a finding directly into store (intake / test helper)
+   * @param {Object} finding
+   * @returns {Object}
+   */
+  addFinding(finding) {
+    if (!finding || !finding.id) {
+      throw new Error('Finding must have an id');
+    }
+    findingsStore.set(finding.id, finding);
+    return finding;
+  }
+
+  /**
    * Clear stores (test helper)
    */
   clearStores() {
