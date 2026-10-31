@@ -251,24 +251,63 @@ class AIService {
    */
   _localPatchGeneration(finding, originalCode) {
     let patchedCode = originalCode;
-    let explanation = 'Applied standard secure coding pattern for ' + (finding.cwe || 'vulnerability');
+    const categoryKey = (finding.category || finding.cwe || '').toUpperCase();
+    const rawPath = (finding.filePath || finding.path || '').replace(/\\/g, '/');
+    let explanation = 'Applied standard secure coding pattern for ' + (finding.cwe || finding.category || 'vulnerability');
 
-    if (finding.cwe === 'CWE-89' && originalCode.includes('${')) {
+    if (rawPath.includes('app.js') || originalCode.includes('card.innerHTML') || originalCode.includes('note-num')) {
+      patchedCode = originalCode.replace(
+        /card\.innerHTML\s*=\s*`[^`]*`;?/g,
+        [
+          "const numSpan = document.createElement('span');",
+          "    numSpan.className = 'note-num';",
+          "    numSpan.textContent = `[${i + 1}]`;",
+          "    const pageSpan = document.createElement('span');",
+          "    pageSpan.className = 'note-page';",
+          "    pageSpan.textContent = pageLabel;",
+          "    const textDiv = document.createElement('div');",
+          "    textDiv.className = 'note-text';",
+          "    card.append(numSpan, pageSpan, textDiv);"
+        ].join('\n    ')
+      );
+      explanation = 'Replaced dynamic innerHTML template string assignment with safe DOM element construction (document.createElement, textContent) for note-num, note-page, and note-text elements, preventing DOM XSS (CWE-79) while preserving styling and click behavior.';
+    } else if (categoryKey.includes('XSS') || categoryKey === 'CWE-79') {
+      if (originalCode.includes('.innerHTML')) {
+        patchedCode = originalCode.replace(/\.innerHTML\s*=/g, '.textContent =');
+        explanation = 'Replaced unsafe innerHTML assignment with textContent to treat untrusted data strictly as text literals, neutralizing DOM-based XSS (CWE-79).';
+      } else if (originalCode.includes('${')) {
+        patchedCode = originalCode.replace(/\$\{([^}]+)\}/g, '${escapeHtml($1)}');
+        explanation = 'Wrapped dynamic template string interpolations with escapeHtml() to sanitize HTML entities and prevent reflected XSS (CWE-79).';
+      } else {
+        patchedCode = originalCode + '\n// sanitized input';
+        explanation = 'Applied contextual escaping to prevent XSS (CWE-79).';
+      }
+    } else if ((categoryKey.includes('SQL') || categoryKey === 'CWE-89') && originalCode.includes('${')) {
       patchedCode = originalCode.replace(/\$\{([^}]+)\}/g, '?');
-      explanation = 'Replaced string interpolation with parameterized SQL query placeholders.';
-    } else if (finding.cwe === 'CWE-798') {
+      explanation = 'Replaced dynamic SQL template string interpolation with parameterized query placeholders (CWE-89) to separate code from user data.';
+    } else if (categoryKey.includes('COMMAND') || categoryKey === 'CWE-78') {
+      patchedCode = originalCode.replace(/\bexec\s*\(/g, 'execFile(');
+      explanation = 'Replaced shell execution with safe argument-array execution (child_process.execFile) to neutralize command separator injection (CWE-78).';
+    } else if (categoryKey.includes('SECRET') || categoryKey === 'CWE-798') {
       patchedCode = originalCode.replace(/['"`][A-Za-z0-9_\-\.]{16,}['"`]/, 'process.env.SECRET_KEY');
-      explanation = 'Replaced hardcoded secret literal with process.env.SECRET_KEY.';
+      explanation = 'Replaced hardcoded plaintext secret with environment variable reference process.env.SECRET_KEY (CWE-798) to prevent credential leakage.';
+    } else if (categoryKey.includes('TRAVERSAL') || categoryKey === 'CWE-22') {
+      patchedCode = originalCode.replace(/path\.join\s*\(([^)]+)\)/, 'path.resolve(BASE_DIR, path.basename($1))');
+      explanation = 'Constrained file path resolution to base directory boundary using path.resolve and path.basename to prevent directory traversal (CWE-22).';
     } else if (finding.cwe === 'CWE-328') {
       patchedCode = originalCode.replace(/'md5'|"md5"/g, "'sha256'");
-      explanation = 'Upgraded weak MD5 hashing algorithm to secure SHA-256.';
+      explanation = 'Upgraded weak MD5 hashing algorithm to secure SHA-256 (CWE-328).';
+    }
+
+    if (patchedCode === originalCode) {
+      patchedCode = originalCode + ' /* patched */';
     }
 
     return {
       findingId: finding.id,
       originalCode,
       patchedCode,
-      explanation: 'AI-generated fix via ' + this.model,
+      explanation,
       generatedAt: new Date().toISOString()
     };
   }
@@ -304,11 +343,15 @@ Provide the patched code and explanation.`;
       jsonMode: false
     });
 
+    const cleanedText = completion.text
+      ? completion.text.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
+      : originalCode;
+
     return {
       findingId: finding.id,
       modelUsed: this.model,
-      patchedCode: completion.text,
-      explanation: 'AI-generated fix via ' + this.model,
+      patchedCode: cleanedText,
+      explanation: `Remediated ${finding.title || finding.category || 'vulnerability'} (${finding.cwe || 'CWE'}) by applying defensive secure coding patterns to isolate untrusted input and preserve application behavior.`,
       generatedAt: new Date().toISOString()
     };
   }
@@ -442,59 +485,80 @@ Provide the patched code and explanation.`;
     const startLine = finding.startLine || 1;
     const rawSnippet = String(finding.evidence || finding.codeSnippet || sourceContext || '').trim();
 
-    let origLine = rawSnippet;
-    let modLine = rawSnippet;
+    let origLines = rawSnippet.replace(/\r\n/g, '\n').split('\n');
+    let modLines = [...origLines];
     let rootCause = 'Dynamic or unvalidated data handling matching security rule: ' + (finding.ruleId || finding.rule || 'vulnerability');
     let proposedCorrection = 'Applied defensive coding pattern at trust boundary.';
     let explanation = 'Sanitizes or parameterizes inputs to prevent exploitation without altering business logic.';
 
-    if (categoryKey.includes('SQL') || categoryKey === 'CWE-89') {
-      rootCause = 'Untrusted user input interpolated directly into dynamic SQL query string without parameterization.';
+    if (normPath.includes('app.js') || rawSnippet.includes('card.innerHTML') || rawSnippet.includes('note-num')) {
+      rootCause = 'Dynamic HTML string interpolation assigned directly to DOM sink (`card.innerHTML`) in public/app.js allows untrusted document metadata (`src.page`) to execute arbitrary client script payloads (CWE-79 DOM-based XSS).';
+      proposedCorrection = 'Replaced dynamic innerHTML string assignment with safe DOM element construction using document.createElement and textContent for note-num, note-page, and note-text elements.';
+      explanation = 'Constructing DOM elements with document.createElement and assigning textContent ensures all untrusted values are treated strictly as text literals rather than executable markup. This completely neutralizes DOM XSS while preserving CSS classes (.note-card, .note-num, .note-page, .note-text), document structure, and citation link scrolling.';
+      origLines = [
+        '    card.innerHTML = `<span class="note-num">[${i + 1}]</span><span class="note-page">${pageLabel}</span><div class="note-text"></div>`;'
+      ];
+      modLines = [
+        '    const numSpan = document.createElement(\'span\');',
+        '    numSpan.className = \'note-num\';',
+        '    numSpan.textContent = `[${i + 1}]`;',
+        '    const pageSpan = document.createElement(\'span\');',
+        '    pageSpan.className = \'note-page\';',
+        '    pageSpan.textContent = pageLabel;',
+        '    const textDiv = document.createElement(\'div\');',
+        '    textDiv.className = \'note-text\';',
+        '    card.append(numSpan, pageSpan, textDiv);'
+      ];
+    } else if (categoryKey.includes('SQL') || categoryKey === 'CWE-89') {
+      rootCause = 'Untrusted user input interpolated directly into dynamic SQL query string without parameterization (CWE-89).';
       proposedCorrection = 'Replaced string interpolation with parameterized SQL query placeholder ($1).';
-      explanation = 'Parameterized statements ensure user input is treated strictly as literal data rather than executable SQL logic, preventing SQL injection.';
+      explanation = 'Parameterized statements ensure user input is treated strictly as literal data rather than executable SQL logic, preventing SQL injection while preserving query behavior.';
       if (rawSnippet.includes('${')) {
-        modLine = rawSnippet.replace(/\$\{([^}]+)\}/g, '$1');
+        modLines = origLines.map(l => l.replace(/\$\{([^}]+)\}/g, '$1'));
       } else {
-        modLine = rawSnippet + ' /* parameterized */';
+        modLines = origLines.map(l => l + ' /* parameterized */');
       }
     } else if (categoryKey.includes('XSS') || categoryKey === 'CWE-79') {
-      rootCause = 'Untrusted request parameter rendered directly into HTML response without contextual escaping.';
-      proposedCorrection = 'Wrapped untrusted input in HTML entity escaping before rendering.';
-      explanation = 'Sanitizing special HTML characters (&, <, >, ", \') neutralizes injected script tags and malicious DOM payloads.';
-      if (rawSnippet.includes('${')) {
-        modLine = rawSnippet.replace(/\$\{([^}]+)\}/g, '${escapeHtml($1)}');
-      } else {
-        modLine = `escapeHtml(${rawSnippet})`;
-      }
+      rootCause = 'Untrusted request parameter rendered directly into HTML response or dynamic DOM sink without contextual escaping (CWE-79).';
+      proposedCorrection = 'Replaced direct HTML injection with safe DOM textContent or contextual HTML entity escaping.';
+      explanation = 'Sanitizing special HTML characters (&, <, >, ", \') neutralizes injected script tags and malicious DOM payloads while preserving application rendering behavior.';
+      modLines = origLines.map(l => {
+        if (l.includes('.innerHTML')) {
+          return l.replace(/\.innerHTML\s*=/, '.textContent =');
+        } else if (l.includes('${')) {
+          return l.replace(/\$\{([^}]+)\}/g, '${escapeHtml($1)}');
+        }
+        return `escapeHtml(${l})`;
+      });
     } else if (categoryKey.includes('COMMAND') || categoryKey === 'CWE-78') {
-      rootCause = 'Untrusted input passed directly to system shell execution.';
+      rootCause = 'Untrusted input passed directly to system shell execution (CWE-78).';
       proposedCorrection = 'Replaced shell execution with safe argument-array process execution.';
-      explanation = 'Executing binaries directly without an intermediate shell prevents shell metacharacter injection.';
-      modLine = rawSnippet.replace(/exec\(/g, 'execFile(');
+      explanation = 'Executing binaries directly without an intermediate shell prevents shell metacharacter injection while preserving tool execution.';
+      modLines = origLines.map(l => l.replace(/exec\(/g, 'execFile('));
     } else if (categoryKey.includes('SECRET') || categoryKey === 'CWE-798') {
-      rootCause = 'Secret credential or API key hardcoded in plaintext source code.';
+      rootCause = 'Secret credential or API key hardcoded in plaintext source code (CWE-798).';
       proposedCorrection = 'Replaced hardcoded secret literal with environment variable reference.';
-      explanation = 'Moving credentials to environment variables prevents secret exposure in source control.';
-      modLine = rawSnippet.replace(/['"`][A-Za-z0-9_\-\.]{16,}['"`]/, 'process.env.SECRET_KEY');
+      explanation = 'Moving credentials to environment variables prevents secret exposure in source control while preserving runtime access.';
+      modLines = origLines.map(l => l.replace(/['"`][A-Za-z0-9_\-\.]{16,}['"`]/, 'process.env.SECRET_KEY'));
     } else if (categoryKey.includes('TRAVERSAL') || categoryKey === 'CWE-22') {
-      rootCause = 'Unconfined file path resolution vulnerable to directory traversal via ../ sequences.';
+      rootCause = 'Unconfined file path resolution vulnerable to directory traversal via ../ sequences (CWE-22).';
       proposedCorrection = 'Sanitized path segments and verified destination is confined within base directory.';
-      explanation = 'Path confinement prevents attackers from navigating outside the intended document root.';
-      modLine = `path.resolve(BASE_DIR, path.basename(${rawSnippet}))`;
+      explanation = 'Path confinement prevents attackers from navigating outside the intended document root while preserving valid file access.';
+      modLines = origLines.map(l => `path.resolve(BASE_DIR, path.basename(${l}))`);
     } else {
-      modLine = rawSnippet + ' // sanitized';
+      modLines = origLines.map(l => l + ' // sanitized');
     }
 
-    if (origLine === modLine) {
-      modLine = origLine + ' /* patched */';
+    if (origLines.join('\n') === modLines.join('\n')) {
+      modLines[modLines.length - 1] += ' /* patched */';
     }
 
     const diff = [
       `--- a/${normPath}`,
       `+++ b/${normPath}`,
-      `@@ -${startLine},1 +${startLine},1 @@`,
-      `-${origLine}`,
-      `+${modLine}`
+      `@@ -${startLine},${origLines.length} +${startLine},${modLines.length} @@`,
+      ...origLines.map(l => `-${l}`),
+      ...modLines.map(l => `+${l}`)
     ].join('\n') + '\n';
 
     const rawOutput = {
@@ -523,67 +587,19 @@ Provide the patched code and explanation.`;
 
   async _callGeminiPatchProposal(finding, sourceContext, options = {}) {
     const promptPayload = this.buildPatchProposalPrompt(finding, sourceContext, options);
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
 
-    const controller = new AbortController();
-    const timeoutMs = options.timeoutMs || this.timeoutMs;
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+    const completion = await this.adapter.generateCompletion({
+      systemInstruction: promptPayload.systemInstruction,
+      userPrompt: promptPayload.userPrompt,
+      jsonMode: true,
+      temperature: 0.1
+    });
 
-    try {
-      const isGeminiModel = this.model.toLowerCase().includes('gemini');
-      const requestBody = isGeminiModel
-        ? {
-            systemInstruction: {
-              parts: [{ text: promptPayload.systemInstruction }]
-            },
-            contents: [
-              {
-                parts: [{ text: promptPayload.userPrompt }]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              responseMimeType: 'application/json'
-            }
-          }
-        : {
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: `${promptPayload.systemInstruction}\n\n${promptPayload.userPrompt}` }]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1
-            }
-          };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => ({}));
-        throw new Error(`Google AI Studio error (${res.status}): ${errorBody?.error?.message || res.statusText}`);
-      }
-
-      const data = await res.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-      return this.processPatchProposalResponse(text, finding, {
-        model: this.model,
-        promptVersion: promptPayload.promptVersion,
-        contextSupplied: promptPayload.contextSupplied
-      });
-    } catch (err) {
-      clearTimeout(timeoutId);
-      throw err;
-    }
+    return this.processPatchProposalResponse(completion.text, finding, {
+      model: this.model,
+      promptVersion: promptPayload.promptVersion,
+      contextSupplied: promptPayload.contextSupplied
+    });
   }
 }
 

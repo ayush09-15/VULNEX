@@ -14,7 +14,7 @@ const workspaceRoot = process.env.WORKSPACE_ROOT || path.resolve(__dirname, '../
 // AI Model Adapter configuration
 const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
 const geminiModel = process.env.GEMINI_MODEL || process.env.GEMMA_MODEL || process.env.AI_MODEL || 'gemma-2-9b-it';
-const aiTimeoutMs = parseInt(process.env.AI_TIMEOUT_MS || '15000', 10);
+const aiTimeoutMs = parseInt(process.env.AI_TIMEOUT_MS || '45000', 10);
 const aiMaxRetries = parseInt(process.env.AI_MAX_RETRIES || '1', 10);
 
 // Validate environment configuration
@@ -38,7 +38,7 @@ const config = {
   ai: {
     apiKey: geminiApiKey,
     model: geminiModel,
-    timeoutMs: isNaN(aiTimeoutMs) ? 15000 : aiTimeoutMs,
+    timeoutMs: isNaN(aiTimeoutMs) ? 45000 : aiTimeoutMs,
     maxRetries: isNaN(aiMaxRetries) ? 1 : aiMaxRetries,
     hasApiKey: Boolean(geminiApiKey && geminiApiKey.trim().length > 0)
   }

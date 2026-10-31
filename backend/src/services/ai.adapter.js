@@ -118,42 +118,22 @@ class GoogleAIModelAdapter {
     const startTime = Date.now();
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(this.model)}:generateContent?key=${this.apiKey}`;
 
-    const isGemini = this.model.toLowerCase().includes('gemini');
-    let requestBody;
+    const requestBody = {
+      generationConfig: {
+        temperature,
+        maxOutputTokens: 2048,
+        ...(jsonMode ? { responseMimeType: 'application/json' } : {})
+      },
+      contents: [
+        {
+          parts: [{ text: userPrompt }]
+        }
+      ]
+    };
 
-    if (isGemini) {
-      requestBody = {
-        generationConfig: {
-          temperature,
-          ...(jsonMode ? { responseMimeType: 'application/json' } : {})
-        },
-        contents: [
-          {
-            parts: [{ text: userPrompt }]
-          }
-        ]
-      };
-      if (systemInstruction) {
-        requestBody.systemInstruction = {
-          parts: [{ text: systemInstruction }]
-        };
-      }
-    } else {
-      // Google Gemma format: instructions and user prompt in content parts
-      const fullText = systemInstruction
-        ? `${systemInstruction}\n\n${userPrompt}`
-        : userPrompt;
-
-      requestBody = {
-        generationConfig: {
-          temperature
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: fullText }]
-          }
-        ]
+    if (systemInstruction) {
+      requestBody.systemInstruction = {
+        parts: [{ text: systemInstruction }]
       };
     }
 
@@ -200,7 +180,11 @@ class GoogleAIModelAdapter {
       }
 
       const data = await response.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const nonThoughtParts = parts.filter(p => !p.thought);
+      const text = nonThoughtParts.length > 0
+        ? nonThoughtParts.map(p => p.text || '').join('')
+        : (parts[parts.length - 1]?.text || '');
 
       return {
         text,
