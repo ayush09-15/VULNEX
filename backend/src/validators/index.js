@@ -6,11 +6,16 @@
 const canonical = require('./canonical.schema');
 const semgrep = require('./semgrep.schema');
 const investigation = require('./investigation.schema');
+const commonFinding = require('./commonFinding.schema');
 
 module.exports = {
   ...canonical,
   semgrep,
   investigation,
+  commonFinding,
+  CommonFindingSchema: commonFinding.CommonFindingSchema,
+  validateCommonFinding: commonFinding.validateCommonFinding,
+  validateCommonFindings: commonFinding.validateCommonFindings,
   // Direct helpers for investigation
   parseAndValidateAIInvestigation: investigation.parseAndValidateAIInvestigation,
   createFallbackInvestigation: investigation.createFallbackInvestigation,
