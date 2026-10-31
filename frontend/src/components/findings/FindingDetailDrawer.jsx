@@ -10,6 +10,7 @@ import {
   Loader2
 } from 'lucide-react';
 import SeverityBadge from '../common/SeverityBadge';
+import InvestigationResultPanel from './InvestigationResultPanel';
 import vulnexApi from '../../services/api';
 
 export default function FindingDetailDrawer({
@@ -64,7 +65,10 @@ export default function FindingDetailDrawer({
           limitations: [
             'Static AST analysis without live database verification',
             'Input validation middleware upstream not inspected in current bounded slice'
-          ]
+          ],
+          model: 'gemma-2-9b-it',
+          promptVersion: 'vulnex-investigation-v1',
+          createdAt: new Date().toISOString()
         },
         status: 'TRIAGED'
       });
@@ -230,91 +234,13 @@ export default function FindingDetailDrawer({
           </div>
 
           {ai ? (
-            <div className="p-5 rounded-xl bg-slate-900/60 border border-cyan-900/30 space-y-4">
-              {/* Assessment & Confidence */}
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-                <div className="flex items-center gap-2">
-                  <span className="text-slate-400 font-mono">Assessment:</span>
-                  <span
-                    className={`font-mono font-bold px-2.5 py-0.5 rounded text-xs ${
-                      ai.assessment === 'LIKELY_TRUE'
-                        ? 'bg-red-950/50 text-red-400 border border-red-800/40'
-                        : ai.assessment === 'LIKELY_FALSE'
-                        ? 'bg-emerald-950/50 text-emerald-400 border border-emerald-800/40'
-                        : 'bg-amber-950/50 text-amber-400 border border-amber-800/40'
-                    }`}
-                  >
-                    {ai.assessment}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 font-mono">
-                  <span className="text-slate-500">AI Confidence:</span>
-                  <span className="text-cyan-400 font-bold">{ai.confidence}</span>
-                </div>
-              </div>
-
-              {/* Summary */}
-              <div>
-                <span className="text-slate-400 font-mono font-semibold block mb-1">
-                  Root Cause Analysis:
-                </span>
-                <p className="text-slate-200 leading-relaxed font-sans">
-                  {ai.summary}
-                </p>
-              </div>
-
-              {/* Preconditions */}
-              {ai.preconditions && ai.preconditions.length > 0 && (
-                <div>
-                  <span className="text-slate-400 font-mono font-semibold block mb-1">
-                    Exploit Preconditions:
-                  </span>
-                  <ul className="list-disc list-inside space-y-1 text-slate-300 font-sans">
-                    {ai.preconditions.map((item, idx) => (
-                      <li key={idx}>{item}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Potential Impact */}
-              {ai.potentialImpact && (
-                <div>
-                  <span className="text-slate-400 font-mono font-semibold block mb-1">
-                    Potential Impact:
-                  </span>
-                  <p className="text-slate-300 leading-relaxed font-sans">
-                    {ai.potentialImpact}
-                  </p>
-                </div>
-              )}
-
-              {/* Recommendation */}
-              {ai.recommendedFix && (
-                <div className="p-3 rounded-lg bg-slate-950 border border-slate-800">
-                  <span className="text-cyan-400 font-mono font-semibold block mb-1">
-                    Recommended Remediation:
-                  </span>
-                  <p className="text-slate-300 leading-relaxed font-sans">
-                    {ai.recommendedFix}
-                  </p>
-                </div>
-              )}
-
-              {/* Limitations Notice */}
-              {ai.limitations && ai.limitations.length > 0 && (
-                <div className="pt-2 border-t border-slate-800/80 text-[10px] text-slate-500 font-mono">
-                  <span className="font-semibold block mb-1">Analysis Limitations:</span>
-                  <ul className="list-disc list-inside space-y-0.5">
-                    {ai.limitations.map((lim, idx) => (
-                      <li key={idx}>{lim}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
+            <InvestigationResultPanel
+              investigation={ai}
+              onReinvestigate={handleRunInvestigation}
+              loading={investigating}
+            />
           ) : (
-            <div className="p-6 text-center rounded-xl bg-slate-900/40 border border-slate-800 space-y-3">
+            <div className="p-6 text-center rounded-2xl bg-slate-900/40 border border-slate-800 space-y-3">
               <p className="text-slate-400 text-xs">
                 No AI investigation record exists for this finding yet. Run contextual analysis to evaluate exploitability, preconditions, and impact.
               </p>
