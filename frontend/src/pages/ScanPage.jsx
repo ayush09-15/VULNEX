@@ -20,6 +20,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import vulnexApi from '../services/api';
+import ScanStateView from '../components/common/ScanStateView.jsx';
 
 const PIPELINE_STAGES = [
   { key: 'QUEUED', label: 'Queued', description: 'Assigned traceable Scan ID' },
@@ -61,6 +62,8 @@ export default function ScanPage() {
 
   // Execution & Progress State
   const [isScanning, setIsScanning] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [lastTargetRepoId, setLastTargetRepoId] = useState('repo_fixture_01');
   const [activeStage, setActiveStage] = useState('IDLE'); // 'IDLE' | 'QUEUED' | 'PREPARING' | 'SCANNING' | 'NORMALIZING' | 'COMPLETED' | 'PARTIAL' | 'FAILED'
   const [scanRecord, setScanRecord] = useState(null);
   const [error, setError] = useState(null);
@@ -162,6 +165,7 @@ export default function ScanPage() {
         repositoryId = 'repo_fixture_01';
       }
 
+      setLastTargetRepoId(repositoryId);
       setActiveStage('SCANNING');
       const scanRes = await vulnexApi.scans.start({
         repositoryId,
@@ -184,10 +188,40 @@ export default function ScanPage() {
     }
   };
 
+  const handleRetryScan = async () => {
+    // Prevent duplicate requests caused by repeated clicks
+    if (isRetrying || isScanning) return;
+    setIsRetrying(true);
+    setError(null);
+
+    try {
+      const scanRes = await vulnexApi.scans.start({
+        repositoryId: lastTargetRepoId || 'repo_fixture_01',
+        ref: refName.trim() || 'main',
+        scanners: selectedScanners,
+      });
+
+      const scan = scanRes.data || scanRes;
+      setScanRecord(scan);
+      setActiveStage(scan.status || scan.stage || 'COMPLETED');
+      setError(null);
+    } catch (err) {
+      // Requirement 6: Preserve existing scan data when a retry fails, where appropriate
+      setError({
+        code: err.code || 'SCAN_RETRY_FAILED',
+        message: err.message || 'Scan retry execution failed.',
+        details: err.details,
+      });
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+
   const handleResetScan = () => {
     setScanRecord(null);
     setActiveStage('IDLE');
     setError(null);
+    setIsRetrying(false);
   };
 
   const isCompleted = activeStage === 'COMPLETED' || activeStage === 'PARTIAL';
@@ -213,39 +247,6 @@ export default function ScanPage() {
           strict SSRF guards and bounded execution workspaces.
         </p>
       </div>
-
-      {/* Error Callout Banner */}
-      {error && (
-        <div className="p-4 rounded-xl bg-red-950/40 border border-red-800/80 text-red-200 flex items-start gap-3 text-xs animate-shake">
-          <AlertCircle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
-          <div className="flex-1 space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="font-semibold text-red-300">Scan Execution Error</span>
-              {error.code && (
-                <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-red-900/60 border border-red-700/60 text-red-300">
-                  {error.code}
-                </span>
-              )}
-            </div>
-            <p className="text-red-300/90 leading-relaxed">{error.message}</p>
-            {error.details && Array.isArray(error.details) && (
-              <ul className="list-disc list-inside text-red-400/80 text-[11px] pt-1">
-                {error.details.map((d, idx) => (
-                  <li key={idx}>
-                    {typeof d === 'string' ? d : d.message || JSON.stringify(d)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <button
-            onClick={() => setError(null)}
-            className="text-red-400 hover:text-red-200 text-xs px-2 py-1 rounded bg-red-900/30 hover:bg-red-900/60 transition-colors"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
 
       {/* Main Configuration & Execution Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -570,122 +571,20 @@ export default function ScanPage() {
         </div>
       </div>
 
-      {/* Post-Scan Results & Findings Navigation Banner */}
-      {isCompleted && scanRecord && (
-        <div className="p-6 rounded-2xl bg-gradient-to-r from-slate-900/90 via-slate-900/60 to-cyan-950/20 border border-cyan-900/50 space-y-4 animate-slideDown shadow-xl">
-          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold font-mono tracking-wider uppercase bg-emerald-950 text-emerald-300 border border-emerald-800">
-                  {scanRecord.status || 'COMPLETED'}
-                </span>
-                <span className="text-xs font-mono text-slate-400">
-                  Scan ID: <strong className="text-slate-200">{scanRecord.id}</strong>
-                </span>
-              </div>
-              <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
-                <span>Deterministic Scan Completed</span>
-                <span className="text-xs font-normal text-slate-400">
-                  ({totalFindings} unique security findings detected)
-                </span>
-              </h3>
-            </div>
-
-            {/* Direct Navigation to Findings CTA */}
-            <button
-              type="button"
-              onClick={() =>
-                navigate('/findings', {
-                  state: { scanId: scanRecord.id, scanRecord },
-                })
-              }
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold shadow-md transition-all group"
-            >
-              <span>View Findings & Triage Issues</span>
-              <ArrowRight className="w-4 h-4 group-hover:translate-x-0.5 transition-transform" />
-            </button>
-          </div>
-
-          {/* Severity Metrics Bar */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-slate-800/80">
-            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
-              <span className="text-[10px] font-mono text-red-400 font-semibold uppercase">
-                Critical
-              </span>
-              <div className="text-lg font-extrabold text-red-300 mt-0.5">
-                {bySeverity.CRITICAL}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
-              <span className="text-[10px] font-mono text-orange-400 font-semibold uppercase">
-                High
-              </span>
-              <div className="text-lg font-extrabold text-orange-300 mt-0.5">
-                {bySeverity.HIGH}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
-              <span className="text-[10px] font-mono text-amber-400 font-semibold uppercase">
-                Medium
-              </span>
-              <div className="text-lg font-extrabold text-amber-300 mt-0.5">
-                {bySeverity.MEDIUM}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
-              <span className="text-[10px] font-mono text-blue-400 font-semibold uppercase">
-                Low
-              </span>
-              <div className="text-lg font-extrabold text-blue-300 mt-0.5">
-                {bySeverity.LOW}
-              </div>
-            </div>
-
-            <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800">
-              <span className="text-[10px] font-mono text-slate-400 font-semibold uppercase">
-                Total
-              </span>
-              <div className="text-lg font-extrabold text-slate-200 mt-0.5">
-                {totalFindings}
-              </div>
-            </div>
-          </div>
-
-          {/* Scanners Executed & Events Timeline */}
-          {scanRecord.events && scanRecord.events.length > 0 && (
-            <div className="pt-2">
-              <div className="text-[11px] font-mono text-slate-400 mb-2 flex items-center gap-1.5">
-                <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Scan Stage Execution Log</span>
-              </div>
-              <div className="max-h-36 overflow-y-auto rounded-lg bg-slate-950/80 p-3 font-mono text-[11px] space-y-1 border border-slate-800/80">
-                {scanRecord.events.map((evt, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <span className="text-slate-600">
-                      {new Date(evt.timestamp).toLocaleTimeString()}
-                    </span>
-                    <span
-                      className={`px-1.5 py-0.2 rounded text-[10px] font-semibold ${
-                        evt.status === 'SUCCESS'
-                          ? 'text-emerald-400 bg-emerald-950/60'
-                          : evt.status === 'FAILED'
-                          ? 'text-red-400 bg-red-950/60'
-                          : 'text-cyan-400 bg-cyan-950/60'
-                      }`}
-                    >
-                      [{evt.stage}]
-                    </span>
-                    <span className="text-slate-300">{evt.message}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Explicit Asynchronous Scan State Presentation (Loading, Empty, Success, Partial Failure, Complete Failure, API Error, Retrying) */}
+      <ScanStateView
+        scanRecord={scanRecord}
+        error={error}
+        isScanning={isScanning}
+        isRetrying={isRetrying}
+        onRetry={handleRetryScan}
+        onViewFindings={() =>
+          navigate('/findings', {
+            state: { scanId: scanRecord?.id, scanRecord },
+          })
+        }
+        onReset={handleResetScan}
+      />
     </div>
   );
 }
