@@ -152,7 +152,7 @@ export default function RepositoriesPage() {
         repositoryId: repo.id,
         displayName: repo.displayName,
         sourceType: repo.sourceType,
-        sourceUrl: repo.sanitizedSourceUrl,
+        sourceUrl: repo.sanitizedSourceUrl || repo.sourceUrl || '',
         defaultRef: repo.defaultRef || 'main'
       }
     });

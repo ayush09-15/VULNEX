@@ -18,6 +18,7 @@ import {
   RotateCcw,
   Sparkles,
   ExternalLink,
+  Globe,
 } from 'lucide-react';
 import vulnexApi from '../services/api';
 import ScanStateView from '../components/common/ScanStateView.jsx';
@@ -52,7 +53,9 @@ export default function ScanPage() {
   const location = useLocation();
 
   // Intake State
-  const [targetType, setTargetType] = useState('FIXTURE'); // 'FIXTURE' | 'GITHUB' | 'ZIP'
+  const [targetType, setTargetType] = useState('FIXTURE'); // 'REGISTERED' | 'FIXTURE' | 'GITHUB' | 'ZIP'
+  const [selectedRepo, setSelectedRepo] = useState(null);
+  const [availableRepos, setAvailableRepos] = useState([]);
   const [gitUrl, setGitUrl] = useState('');
   const [refName, setRefName] = useState('main');
   const [zipFile, setZipFile] = useState(null);
@@ -70,17 +73,52 @@ export default function ScanPage() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    let isMounted = true;
+    async function fetchRepos() {
+      try {
+        const res = await vulnexApi.repositories.list();
+        const list = Array.isArray(res) ? res : (res?.data || []);
+        if (isMounted && Array.isArray(list) && list.length > 0) {
+          setAvailableRepos(list);
+        }
+      } catch (err) {
+        console.warn('Could not load repositories list for scan engine:', err);
+      }
+    }
+    fetchRepos();
+    return () => { isMounted = false; };
+  }, []);
+
+  useEffect(() => {
     if (location.state) {
-      if (location.state.sourceType === 'GITHUB' && location.state.sourceUrl) {
+      if (location.state.repositoryId) {
+        const repo = {
+          id: location.state.repositoryId,
+          displayName: location.state.displayName || location.state.repositoryId,
+          sourceType: location.state.sourceType || 'REGISTERED',
+          sourceUrl: location.state.sourceUrl || '',
+          defaultRef: location.state.defaultRef || 'main',
+        };
+        setSelectedRepo(repo);
+        setLastTargetRepoId(location.state.repositoryId);
+        setTargetType('REGISTERED');
+        if (location.state.defaultRef) setRefName(location.state.defaultRef);
+      } else if (location.state.sourceType === 'GITHUB' && location.state.sourceUrl) {
         setTargetType('GITHUB');
         setGitUrl(location.state.sourceUrl);
         if (location.state.defaultRef) setRefName(location.state.defaultRef);
       }
-      if (location.state.repositoryId) {
-        setLastTargetRepoId(location.state.repositoryId);
-      }
     }
   }, [location.state]);
+
+  const handleSelectRepo = (repoId) => {
+    const repo = availableRepos.find((r) => r.id === repoId);
+    if (repo) {
+      setSelectedRepo(repo);
+      setLastTargetRepoId(repo.id);
+      if (repo.defaultRef) setRefName(repo.defaultRef);
+    }
+  };
 
   const toggleScanner = (scannerId) => {
     setSelectedScanners((prev) =>
@@ -115,7 +153,16 @@ export default function ScanPage() {
     setError(null);
 
     // Intake Validation
-    if (targetType === 'GITHUB') {
+    if (targetType === 'REGISTERED') {
+      const activeRepoId = selectedRepo?.id || lastTargetRepoId;
+      if (!activeRepoId) {
+        setError({
+          code: 'MISSING_REPO',
+          message: 'Please select a registered repository to scan.',
+        });
+        return;
+      }
+    } else if (targetType === 'GITHUB') {
       const trimmedUrl = gitUrl.trim();
       if (!trimmedUrl) {
         setError({
@@ -156,7 +203,9 @@ export default function ScanPage() {
     try {
       let repositoryId = 'repo_fixture_01';
 
-      if (targetType === 'GITHUB') {
+      if (targetType === 'REGISTERED') {
+        repositoryId = selectedRepo?.id || lastTargetRepoId || 'repo_fixture_01';
+      } else if (targetType === 'GITHUB') {
         setActiveStage('PREPARING');
         const repoRes = await vulnexApi.repositories.register({
           sourceType: 'GITHUB',
@@ -176,7 +225,7 @@ export default function ScanPage() {
         const repo = repoRes.data || repoRes;
         repositoryId = repo.id;
       } else if (targetType === 'FIXTURE') {
-        repositoryId = lastTargetRepoId || 'repo_fixture_01';
+        repositoryId = 'repo_fixture_01';
       }
 
       setLastTargetRepoId(repositoryId);
@@ -203,14 +252,13 @@ export default function ScanPage() {
   };
 
   const handleRetryScan = async () => {
-    // Prevent duplicate requests caused by repeated clicks
     if (isRetrying || isScanning) return;
     setIsRetrying(true);
     setError(null);
 
     try {
       const scanRes = await vulnexApi.scans.start({
-        repositoryId: lastTargetRepoId || 'repo_fixture_01',
+        repositoryId: lastTargetRepoId || selectedRepo?.id || 'repo_fixture_01',
         ref: refName.trim() || 'main',
         scanners: selectedScanners,
       });
@@ -218,14 +266,13 @@ export default function ScanPage() {
       const scan = scanRes.data || scanRes;
       setScanRecord(scan);
       setActiveStage(scan.status || scan.stage || 'COMPLETED');
-      setError(null);
     } catch (err) {
-      // Requirement 6: Preserve existing scan data when a retry fails, where appropriate
       setError({
-        code: err.code || 'SCAN_RETRY_FAILED',
-        message: err.message || 'Scan retry execution failed.',
+        code: err.code || 'RETRY_FAILED',
+        message: err.message || 'Retry scan failed.',
         details: err.details,
       });
+      setActiveStage('FAILED');
     } finally {
       setIsRetrying(false);
     }
@@ -279,7 +326,20 @@ export default function ScanPage() {
             <label className="block text-xs font-mono font-medium text-slate-400 mb-2">
               Select Intake Source
             </label>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <button
+                type="button"
+                onClick={() => setTargetType('REGISTERED')}
+                className={`px-3 py-2.5 rounded-xl text-xs font-mono font-medium flex items-center justify-center gap-2 border transition-all ${
+                  targetType === 'REGISTERED'
+                    ? 'bg-cyan-600/20 border-cyan-500 text-cyan-300 shadow-sm'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                }`}
+              >
+                <FolderGit2 className="w-3.5 h-3.5" />
+                <span>Target Repo</span>
+              </button>
+
               <button
                 type="button"
                 onClick={() => setTargetType('FIXTURE')}
@@ -302,8 +362,8 @@ export default function ScanPage() {
                     : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
                 }`}
               >
-                <FolderGit2 className="w-3.5 h-3.5" />
-                <span>GitHub HTTPS</span>
+                <Globe className="w-3.5 h-3.5" />
+                <span>New GitHub</span>
               </button>
 
               <button
@@ -316,12 +376,71 @@ export default function ScanPage() {
                 }`}
               >
                 <FileArchive className="w-3.5 h-3.5" />
-                <span>ZIP Upload</span>
+                <span>New ZIP</span>
               </button>
             </div>
           </div>
 
           {/* Intake Fields By Mode */}
+          {targetType === 'REGISTERED' && (
+            <div className="space-y-3">
+              {availableRepos.length > 0 && (
+                <div>
+                  <label className="block text-xs font-mono font-medium text-slate-400 mb-1.5">
+                    Choose Target Repository
+                  </label>
+                  <select
+                    value={selectedRepo?.id || lastTargetRepoId || (availableRepos[0] ? availableRepos[0].id : '')}
+                    onChange={(e) => handleSelectRepo(e.target.value)}
+                    className="w-full px-3.5 py-2 rounded-xl bg-slate-950 border border-slate-800 text-slate-200 text-xs font-mono focus:border-cyan-500 focus:outline-none transition-colors"
+                  >
+                    {availableRepos.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.displayName || r.id} ({r.sourceType})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="p-4 rounded-xl bg-slate-950/80 border border-cyan-900/40 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold text-cyan-300 font-mono flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-cyan-400" />
+                    {selectedRepo?.displayName || lastTargetRepoId}
+                  </span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/60">
+                    {selectedRepo?.sourceType || 'REGISTERED'}
+                  </span>
+                </div>
+                <div className="text-[11px] font-mono text-slate-400 space-y-1">
+                  <div>
+                    <span className="text-slate-500">Repo ID: </span>
+                    <strong className="text-slate-300">{selectedRepo?.id || lastTargetRepoId}</strong>
+                  </div>
+                  {(selectedRepo?.sourceUrl || selectedRepo?.sanitizedSourceUrl) && (
+                    <div className="truncate" title={selectedRepo.sourceUrl || selectedRepo.sanitizedSourceUrl}>
+                      <span className="text-slate-500">Source: </span>
+                      <strong className="text-slate-300">{selectedRepo.sourceUrl || selectedRepo.sanitizedSourceUrl}</strong>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-[11px] font-mono font-medium text-slate-400 mt-2 mb-1">
+                    Target Branch / Ref
+                  </label>
+                  <input
+                    type="text"
+                    value={refName}
+                    onChange={(e) => setRefName(e.target.value)}
+                    placeholder="main"
+                    className="w-full px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-200 text-xs font-mono focus:border-cyan-500 focus:outline-none transition-colors"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {targetType === 'FIXTURE' && (
             <div className="p-4 rounded-xl bg-slate-950/80 border border-cyan-900/30 space-y-2">
               <div className="flex items-center justify-between">
