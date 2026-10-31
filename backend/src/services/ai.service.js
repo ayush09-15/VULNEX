@@ -2,23 +2,44 @@ const {
   parseAndValidateAIInvestigation,
   createFallbackInvestigation
 } = require('../validators/investigation.schema');
+const {
+  PROMPT_VERSION,
+  REMEDIATION_GUIDANCE,
+  redactSecrets,
+  formatBoundedExcerpt,
+  getSystemInstruction,
+  buildInvestigationPrompt
+} = require('./ai.prompt');
 
 /**
  * AI Service for VULNEX
- * Handles AI-powered vulnerability analysis, root-cause diagnosis,
+ * Handles evidence-bounded AI vulnerability investigation, root-cause diagnosis,
  * and automated security patch generation.
  */
-
 class AIService {
   constructor() {
     this.apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '';
     this.model = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    this.promptVersion = PROMPT_VERSION;
   }
 
   /**
-   * Analyze a vulnerability finding
+   * Constructs an evidence-bounded investigation prompt for a finding.
+   *
    * @param {Object} finding
-   * @param {string} codeContext
+   * @param {string|Object} codeContext
+   * @param {Object} [options={}]
+   * @returns {Object} Structured prompt payload
+   */
+  buildInvestigationPrompt(finding, codeContext = '', options = {}) {
+    return buildInvestigationPrompt(finding, codeContext, options);
+  }
+
+  /**
+   * Analyze a vulnerability finding using evidence-bounded AI investigation.
+   *
+   * @param {Object} finding
+   * @param {string|Object} codeContext
    * @returns {Promise<Object>}
    */
   async analyzeVulnerability(finding, codeContext = '') {
@@ -30,8 +51,15 @@ class AIService {
       }
     }
 
-    // Heuristic fallback analysis when API key is not yet configured
-    return this._localAnalysis(finding, codeContext);
+    // Heuristic fallback analysis when API key is not yet configured or fails
+    const localOutput = this._localAnalysis(finding, codeContext);
+    return {
+      ...localOutput,
+      findingId: finding?.id || 'finding_unknown',
+      modelUsed: 'vulnex-heuristic-engine-v1',
+      promptVersion: this.promptVersion,
+      analyzedAt: new Date().toISOString()
+    };
   }
 
   /**
@@ -50,6 +78,7 @@ class AIService {
         ...parseResult.data,
         findingId: finding?.id || 'finding_unknown',
         modelUsed: this.model,
+        promptVersion: this.promptVersion,
         isFallback: false
       };
     }
@@ -58,6 +87,7 @@ class AIService {
       findingId: finding?.id || 'finding_unknown',
       reason: `AI output validation failed: ${parseResult.error?.message || 'malformed response'}`,
       model: this.model,
+      promptVersion: this.promptVersion,
       finding
     });
   }
@@ -81,54 +111,95 @@ class AIService {
   }
 
   /**
-   * Local heuristic analysis engine
+   * Local heuristic analysis engine that produces schema-compliant
+   * evidence-bounded investigation output.
    */
-  _localAnalysis(finding, codeContext) {
+  _localAnalysis(finding, codeContext = '') {
+    const categoryKey = (finding.category || finding.cwe || '').toUpperCase();
+
     const analysisMap = {
       'CWE-89': {
-        rootCause: 'Dynamic SQL construction with unsanitized parameters allows attackers to alter query logic.',
-        cvssScore: 9.8,
+        summary: 'Dynamic SQL construction with unsanitized parameters allows attackers to alter query logic.',
         exploitVector: 'Network / Unauthenticated HTTP input',
         impact: 'Complete database compromise, data leakage, and potential data modification.',
-        mitigation: 'Convert string interpolation into parameterized statements or use an ORM with prepared bindings.'
+        mitigation: 'Convert string interpolation into parameterized statements or use an ORM with prepared bindings.',
+        severity: 'HIGH'
+      },
+      'SQL_INJECTION': {
+        summary: 'Dynamic SQL construction with unsanitized parameters allows attackers to alter query logic.',
+        exploitVector: 'Network / Unauthenticated HTTP input',
+        impact: 'Complete database compromise, data leakage, and potential data modification.',
+        mitigation: 'Convert string interpolation into parameterized statements or use an ORM with prepared bindings.',
+        severity: 'HIGH'
       },
       'CWE-78': {
-        rootCause: 'Passing untrusted input directly into a system shell via exec() or eval().',
-        cvssScore: 9.8,
+        summary: 'Passing untrusted input directly into a system shell via exec() or eval().',
         exploitVector: 'Remote code execution via command separator injection (e.g., ; && |).',
         impact: 'Complete server host takeover and lateral movement.',
-        mitigation: 'Use child_process.execFile with an array of arguments, or avoid OS shell calls entirely.'
+        mitigation: 'Use child_process.execFile with an array of arguments, or avoid OS shell calls entirely.',
+        severity: 'CRITICAL'
+      },
+      'COMMAND_INJECTION': {
+        summary: 'Passing untrusted input directly into a system shell via exec() or eval().',
+        exploitVector: 'Remote code execution via command separator injection (e.g., ; && |).',
+        impact: 'Complete server host takeover and lateral movement.',
+        mitigation: 'Use child_process.execFile with an array of arguments, or avoid OS shell calls entirely.',
+        severity: 'CRITICAL'
       },
       'CWE-798': {
-        rootCause: 'Secret credentials, API tokens, or encryption keys hardcoded in source control.',
-        cvssScore: 7.5,
+        summary: 'Secret credentials, API tokens, or encryption keys hardcoded in source control.',
         exploitVector: 'Credential harvesting from public or leaked repositories.',
         impact: 'Unauthorized access to downstream cloud services and API abuse.',
-        mitigation: 'Move keys to environment variables and utilize secret management systems (e.g. AWS Secrets Manager, Vault).'
+        mitigation: 'Move keys to environment variables and utilize secret management systems (e.g. AWS Secrets Manager, Vault).',
+        severity: 'HIGH'
+      },
+      'HARDCODED_SECRET': {
+        summary: 'Secret credentials, API tokens, or encryption keys hardcoded in source control.',
+        exploitVector: 'Credential harvesting from public or leaked repositories.',
+        impact: 'Unauthorized access to downstream cloud services and API abuse.',
+        mitigation: 'Move keys to environment variables and utilize secret management systems (e.g. AWS Secrets Manager, Vault).',
+        severity: 'HIGH'
       },
       'CWE-22': {
-        rootCause: 'Path traversal via path.join or file operations lacking path confinement.',
-        cvssScore: 7.5,
+        summary: 'Path traversal via path.join or file operations lacking path confinement.',
         exploitVector: 'Directory traversal using ../ sequences in user input.',
         impact: 'Unauthorized reading or overwriting of sensitive system files.',
-        mitigation: 'Sanitize path segments, reject directory separators, and verify that path.resolve stays within allowed base directory.'
+        mitigation: 'Sanitize path segments, reject directory separators, and verify that path.resolve stays within allowed base directory.',
+        severity: 'HIGH'
+      },
+      'PATH_TRAVERSAL': {
+        summary: 'Path traversal via path.join or file operations lacking path confinement.',
+        exploitVector: 'Directory traversal using ../ sequences in user input.',
+        impact: 'Unauthorized reading or overwriting of sensitive system files.',
+        mitigation: 'Sanitize path segments, reject directory separators, and verify that path.resolve stays within allowed base directory.',
+        severity: 'HIGH'
       }
     };
 
-    const details = analysisMap[finding.cwe] || {
-      rootCause: `Detected pattern matching security rule: ${finding.name || 'Security Finding'}`,
-      cvssScore: finding.severity === 'CRITICAL' ? 9.0 : finding.severity === 'HIGH' ? 7.5 : 5.0,
+    const details = analysisMap[categoryKey] || analysisMap[finding.cwe] || {
+      summary: `Detected pattern matching security rule: ${finding.title || finding.name || 'Security Finding'}`,
       exploitVector: 'Standard web application attack vector',
       impact: finding.description || 'Potential security risk to application confidentiality and integrity.',
-      mitigation: finding.remediation || 'Sanitize input and follow secure coding best practices.'
+      mitigation: finding.remediation || 'Sanitize input and follow secure coding best practices.',
+      severity: finding.severity || 'MEDIUM'
     };
 
+    const rawEvidence = finding.evidence || finding.codeSnippet || (typeof codeContext === 'string' ? codeContext.slice(0, 200) : '');
+    const cleanEvidence = rawEvidence ? [redactSecrets(rawEvidence)] : ['[Static scanner evidence matching rule]'];
+
     return {
-      findingId: finding.id,
-      modelUsed: 'vulnex-heuristic-engine-v1',
-      confidence: 0.94,
-      ...details,
-      analyzedAt: new Date().toISOString()
+      assessment: 'LIKELY_TRUE',
+      severity: (finding.severity || details.severity || 'HIGH').toUpperCase(),
+      summary: details.summary,
+      evidence: cleanEvidence,
+      preconditions: [details.exploitVector],
+      potentialImpact: details.impact,
+      recommendedFix: details.mitigation,
+      confidence: 'MEDIUM',
+      limitations: [
+        'Local deterministic analysis generated without live remote LLM inference',
+        'Analysis bounded to finding metadata and available code snippet'
+      ]
     };
   }
 
@@ -160,38 +231,43 @@ class AIService {
   }
 
   async _callGeminiAnalysis(finding, codeContext) {
-    // If Gemini REST API is called
+    const promptPayload = this.buildInvestigationPrompt(finding, codeContext);
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
-    const prompt = `Analyze this security finding:
-Vulnerability: ${finding.name} (${finding.cwe})
-Severity: ${finding.severity}
-Code:
-${codeContext || finding.codeSnippet}
-
-Return JSON with: rootCause, cvssScore, exploitVector, impact, mitigation.`;
 
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
+        systemInstruction: {
+          parts: [{ text: promptPayload.systemInstruction }]
+        },
+        contents: [
+          {
+            parts: [{ text: promptPayload.userPrompt }]
+          }
+        ],
+        generationConfig: {
+          temperature: 0.1,
+          responseMimeType: 'application/json'
+        }
       })
     });
 
     const data = await res.json();
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+    const processed = this.processInvestigationResponse(text, finding);
     return {
-      findingId: finding.id,
-      modelUsed: this.model,
-      rawOutput: text,
-      analyzedAt: new Date().toISOString()
+      ...processed,
+      promptVersion: promptPayload.promptVersion,
+      contextSupplied: promptPayload.contextSupplied
     };
   }
 
   async _callGeminiPatch(finding, originalCode) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
     const prompt = `Fix this security vulnerability:
-Vulnerability: ${finding.name} (${finding.cwe})
+Vulnerability: ${finding.name || finding.title} (${finding.cwe || finding.category})
 Code:
 ${originalCode || finding.codeSnippet}
 
@@ -219,6 +295,6 @@ Provide the patched code and explanation.`;
 
 const aiService = new AIService();
 aiService.AIService = AIService;
+aiService.buildInvestigationPrompt = buildInvestigationPrompt;
 
 module.exports = aiService;
-
