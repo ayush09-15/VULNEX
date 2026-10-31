@@ -1,5 +1,5 @@
 {
-  "diff": "--- a/src/routes/user.js\n+++ b/src/routes/user.js\n@@ -42,3 +42,3 @@\n-  const query = `SELECT * FROM users WHERE id = ${id}`;\n-  const result = await db.query(query);\n+  const query = 'SELECT * FROM users WHERE id = $1';\n+  const result = await db.query(query, [id]);\n",
+  "diff": "--- a/src/routes/user.js\n+++ b/src/routes/user.js\n@@ -42,2 +42,2 @@\n-  const query = `SELECT * FROM users WHERE id = ${id}`;\n-  const result = await db.query(query);\n+  const query = 'SELECT * FROM users WHERE id = $1';\n+  const result = await db.query(query, [id]);\n",
   "rationale": {
     "rootCause": "Untrusted request parameter 'id' is directly interpolated into dynamic SQL statement without parameter binding.",
     "proposedCorrection": "Replaced template literal interpolation with parameterized SQL query placeholder ($1) and query argument array.",

@@ -8,6 +8,7 @@ const semgrep = require('./semgrep.schema');
 const investigation = require('./investigation.schema');
 const commonFinding = require('./commonFinding.schema');
 const patchProposal = require('./patchProposal.schema');
+const diffValidator = require('./diffValidator');
 
 module.exports = {
   ...canonical,
@@ -15,6 +16,7 @@ module.exports = {
   investigation,
   commonFinding,
   patchProposal,
+  diffValidator,
   CommonFindingSchema: commonFinding.CommonFindingSchema,
   validateCommonFinding: commonFinding.validateCommonFinding,
   validateCommonFindings: commonFinding.validateCommonFindings,
@@ -39,5 +41,16 @@ module.exports = {
   transitionReviewState: patchProposal.transitionReviewState,
   parseUnifiedDiff: patchProposal.parseUnifiedDiff,
   validateUnifiedDiff: patchProposal.validateUnifiedDiff,
-  parseAndValidateAIPatchProposal: patchProposal.parseAndValidateAIPatchProposal
+  parseAndValidateAIPatchProposal: patchProposal.parseAndValidateAIPatchProposal,
+  // Direct helpers for independent diff & path validation
+  validateDiffAndPaths: diffValidator.validateDiffAndPaths,
+  validateWorkspacePath: diffValidator.validateWorkspacePath,
+  assertValidDiff: diffValidator.assertValidDiff,
+  DiffValidationError: diffValidator.DiffValidationError,
+  WorkspacePathEscapeError: diffValidator.WorkspacePathEscapeError,
+  SymlinkEscapeError: diffValidator.SymlinkEscapeError,
+  MalformedDiffError: diffValidator.MalformedDiffError,
+  InconsistentLineCountError: diffValidator.InconsistentLineCountError,
+  DeclaredFilesMismatchError: diffValidator.DeclaredFilesMismatchError,
+  OutOfScopeDiffError: diffValidator.OutOfScopeDiffError
 };
