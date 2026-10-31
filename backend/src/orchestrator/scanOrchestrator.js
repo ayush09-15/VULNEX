@@ -35,7 +35,7 @@ const DETERMINISTIC_RULES = [
     category: 'SQL_INJECTION',
     severity: 'CRITICAL',
     confidence: 'HIGH',
-    pattern: /(?:query|execute|raw)\s*\(\s*[`'"].*?\$\{.*?\}|SELECT\s+.*?\s+FROM\s+.*?\s*\+\s*[\w\.]+/i,
+    pattern: /(?:query|execute|raw)\s*\(\s*[`'"].*?\$\{.*?\}|SELECT\s+.*?\s+FROM\s+.*?(?:\+\s*[\w\.]+|\$\{.*?\})/i,
     message: 'Direct concatenation or interpolation of untrusted input into SQL queries detected.'
   },
   {
@@ -71,7 +71,7 @@ const DETERMINISTIC_RULES = [
     category: 'XSS',
     severity: 'HIGH',
     confidence: 'HIGH',
-    pattern: /dangerouslySetInnerHTML|innerHTML\s*=\s*(?:req\.|props\.|[^'"]*\+)/,
+    pattern: /dangerouslySetInnerHTML|innerHTML\s*=\s*(?:req\.|props\.|[^'"]*\+)|<[a-z0-9_-]+>.*?\$\{.*?\}/i,
     message: 'Direct insertion of untrusted data into DOM without context-aware output encoding.'
   }
 ];
@@ -154,8 +154,12 @@ function recordEvent(scanRecord, stage, status, message, details = {}) {
  */
 function scanWithDeterministicPatterns(workspacePath, sourceFiles, scanId) {
   const findings = [];
+  const nonCodeExts = new Set(['.md', '.txt', '.rst', '.markdown', '.map']);
 
   for (const fileInfo of sourceFiles) {
+    const ext = path.extname(fileInfo.path || '').toLowerCase();
+    if (nonCodeExts.has(ext)) continue;
+
     const fullPath = path.join(workspacePath, fileInfo.path);
     let content;
     try {

@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 const { URL } = require('url');
 const inventoryService = require('./inventory.service');
 const zipService = require('./zip.service');
@@ -16,14 +18,16 @@ const repositoriesStore = new Map();
 
 // Default fixture repository
 const defaultFixtureId = 'repo_fixture_01';
+const defaultFixturePath = path.resolve(__dirname, '../../../fixtures');
 repositoriesStore.set(defaultFixtureId, {
   id: defaultFixtureId,
   sourceType: 'LOCAL_FIXTURE',
   displayName: 'intentionally-vulnerable-node-app',
-  sanitizedSourceUrl: null,
+  sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
   defaultRef: 'main',
   createdAt: '2026-10-31T03:00:00.000Z',
-  ownerId: null
+  ownerId: null,
+  workspacePath: fs.existsSync(defaultFixturePath) ? defaultFixturePath : './fixtures'
 });
 
 /**
