@@ -1,0 +1,17 @@
+{
+  "diff": "This is not a unified diff format. Just conversational code changes: change line 10 to something else.",
+  "rationale": {
+    "rootCause": "Malformed diff output",
+    "proposedCorrection": "Invalid patch format",
+    "explanation": "Missing standard diff headers"
+  },
+  "changedFiles": [
+    "src/routes/user.js"
+  ],
+  "evidenceReferences": [
+    {
+      "type": "SNIPPET",
+      "reference": "const query = `SELECT * FROM users WHERE id = ${id}`;"
+    }
+  ]
+}

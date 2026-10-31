@@ -1,0 +1,17 @@
+{
+  "diff": "--- a/src/routes/profile.js\n+++ b/src/routes/profile.js\n@@ -15,3 +15,3 @@\n-  res.send(`<h1>Welcome, ${req.query.name}</h1>`);\n+  res.send(`<h1>Welcome, ${escapeHtml(req.query.name)}</h1>`);\n",
+  "rationale": {
+    "rootCause": "Untrusted request parameter 'name' rendered directly into HTML response without contextual output escaping.",
+    "proposedCorrection": "Wrapped user input in HTML entity escaping function escapeHtml().",
+    "explanation": "Contextual HTML encoding sanitizes dangerous characters (<, >, &, \", ') preventing script injection and DOM manipulation."
+  },
+  "changedFiles": [
+    "src/routes/profile.js"
+  ],
+  "evidenceReferences": [
+    {
+      "type": "SNIPPET",
+      "reference": "res.send(`<h1>Welcome, ${req.query.name}</h1>`);"
+    }
+  ]
+}

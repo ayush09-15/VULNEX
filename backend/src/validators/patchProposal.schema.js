@@ -12,6 +12,7 @@
 
 const { z } = require('zod');
 const { SafeRelativeFilePath } = require('./canonical.schema');
+const { extractJsonString } = require('./investigation.schema');
 
 // ----------------------------------------------------------------------------
 // 1. Constants & Enums
@@ -63,6 +64,14 @@ class OutOfScopeProposalError extends Error {
   constructor(message, details = {}) {
     super(message || 'Patch proposal modifies files outside finding scope');
     this.name = 'OutOfScopeProposalError';
+    this.details = details;
+  }
+}
+
+class MissingEvidenceLinkError extends Error {
+  constructor(message, details = {}) {
+    super(message || 'Patch proposal cannot be linked to the original finding evidence');
+    this.name = 'MissingEvidenceLinkError';
     this.details = details;
   }
 }
@@ -222,10 +231,15 @@ function validateUnifiedDiff(diffString) {
 
 const UnifiedDiffSchema = z.string()
   .min(1, 'diff content is required')
-  .refine(
-    (diff) => parseUnifiedDiff(diff).valid,
-    (diff) => ({ message: parseUnifiedDiff(diff).error || 'Invalid unified diff format' })
-  );
+  .superRefine((diff, ctx) => {
+    const parsed = parseUnifiedDiff(diff);
+    if (!parsed.valid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: parsed.error || 'Invalid unified diff format'
+      });
+    }
+  });
 
 const EvidenceReferenceSchema = z.union([
   z.string().trim().min(1, 'Evidence reference string cannot be empty'),
@@ -276,6 +290,22 @@ const PatchProposalSchema = z.object({
   message: 'Files in unified diff header must match changedFiles list',
   path: ['changedFiles']
 });
+
+const AIPatchRationaleSchema = z.union([
+  z.string().trim().min(5, 'Rationale must be at least 5 characters explaining the fix'),
+  z.object({
+    rootCause: z.string().trim().min(1, 'rootCause is required'),
+    proposedCorrection: z.string().trim().min(1, 'proposedCorrection is required'),
+    explanation: z.string().trim().min(1, 'explanation is required')
+  })
+]);
+
+const AIPatchProposalOutputSchema = z.object({
+  diff: UnifiedDiffSchema,
+  rationale: AIPatchRationaleSchema,
+  changedFiles: z.array(SafeRelativeFilePath).min(1).optional(),
+  evidenceReferences: z.array(EvidenceReferenceSchema).min(1).optional()
+}).strict();
 
 // ----------------------------------------------------------------------------
 // 5. Scope Validation Helper
@@ -406,12 +436,307 @@ function validateCreatePatchProposal(data) {
   return CreatePatchProposalSchema.safeParse(data);
 }
 
+// ----------------------------------------------------------------------------
+// 8. AI Patch Output Parser & Validator
+// ----------------------------------------------------------------------------
+
+/**
+ * Safely parses and validates AI model patch output against the unified proposal contract.
+ * Enforces:
+ * - JSON extraction and syntax parsing with secret scrubbing
+ * - Strict schema validation rejecting unauthorized command/policy override fields
+ * - Scope bounding ensuring diff targets only the finding's file
+ * - Evidence linking ensuring proposal references original finding evidence
+ * - Strict PENDING_REVIEW initial state (never self-authorized)
+ *
+ * @param {string|object} rawInput - Raw AI output string or parsed JSON object
+ * @param {object} finding - Associated security finding
+ * @param {object} [options={}] - Optional configuration
+ * @returns {{ success: boolean, data?: object, error?: { code: string, message: string, details: any[] } }}
+ */
+function parseAndValidateAIPatchProposal(rawInput, finding, options = {}) {
+  if (rawInput === null || rawInput === undefined || (typeof rawInput === 'string' && rawInput.trim() === '')) {
+    return {
+      success: false,
+      error: {
+        code: 'EMPTY_AI_OUTPUT',
+        message: 'AI patch proposal output is empty or undefined',
+        details: []
+      }
+    };
+  }
+
+  // 1. Finding validation
+  if (!finding || typeof finding !== 'object') {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_FINDING',
+        message: 'A valid target finding object is required to bind the patch proposal',
+        details: []
+      }
+    };
+  }
+
+  const rawFindingPath = finding.filePath || finding.path;
+  if (!rawFindingPath || typeof rawFindingPath !== 'string') {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_FINDING',
+        message: 'Target finding is missing a valid filePath',
+        details: []
+      }
+    };
+  }
+  const normalizedFindingPath = rawFindingPath.replace(/\\/g, '/').replace(/^\/+/, '');
+
+  // 2. Finding evidence check
+  const rawFindingEvidence = finding.evidence || finding.codeSnippet || options.sourceContext || '';
+  const evidenceText = typeof rawFindingEvidence === 'object' ? JSON.stringify(rawFindingEvidence) : String(rawFindingEvidence).trim();
+  if (!evidenceText) {
+    return {
+      success: false,
+      error: {
+        code: 'MISSING_EVIDENCE',
+        message: 'Finding contains no evidence or code snippet to link proposal against',
+        details: []
+      }
+    };
+  }
+
+  // 3. Extract and parse JSON
+  let parsed;
+  if (typeof rawInput === 'object') {
+    parsed = rawInput;
+  } else {
+    const jsonStr = extractJsonString(rawInput);
+    if (!jsonStr) {
+      return {
+        success: false,
+        error: {
+          code: 'MALFORMED_AI_OUTPUT',
+          message: 'Could not extract JSON content from AI output',
+          details: []
+        }
+      };
+    }
+    try {
+      parsed = JSON.parse(jsonStr);
+    } catch (parseErr) {
+      let cleanMsg = String(parseErr.message || 'JSON parse error');
+      cleanMsg = cleanMsg
+        .replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{30,}\b/g, '[REDACTED_TOKEN]')
+        .replace(/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
+        .replace(/(password|secret|api_key|token)\s*[:=]\s*['"]?[^\s'"]+['"]?/gi, '$1=[REDACTED_SECRET]');
+
+      return {
+        success: false,
+        error: {
+          code: 'MALFORMED_AI_JSON',
+          message: `Failed to parse AI output as JSON: ${cleanMsg}`,
+          details: [{ error: cleanMsg }]
+        }
+      };
+    }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_AI_STRUCTURE',
+        message: 'AI output must be a JSON object',
+        details: []
+      }
+    };
+  }
+
+  // 4. Validate schema with strict key enforcement
+  const schemaResult = AIPatchProposalOutputSchema.safeParse(parsed);
+  if (!schemaResult.success) {
+    const issues = schemaResult.error.issues || [];
+    const isUnrecognizedKey = issues.some(i => i.code === 'unrecognized_keys');
+    const isPathError = issues.some(i =>
+      i.path.includes('changedFiles') ||
+      String(i.message).toLowerCase().includes('path') ||
+      String(i.message).toLowerCase().includes('traversal')
+    );
+    const isDiffError = issues.some(i => i.path.includes('diff'));
+
+    let code = 'INVALID_PATCH_PROPOSAL_SCHEMA';
+    if (isUnrecognizedKey) code = 'UNAUTHORIZED_POLICY_OVERRIDE';
+    else if (isPathError) code = 'INVALID_PATH';
+    else if (isDiffError) code = 'MALFORMED_DIFF';
+
+    return {
+      success: false,
+      error: {
+        code,
+        message: issues[0]?.message || 'AI output failed patch proposal schema validation',
+        details: issues.map(err => ({
+          path: Array.isArray(err.path) ? err.path.join('.') : String(err.path),
+          message: err.message,
+          code: err.code
+        }))
+      }
+    };
+  }
+
+  // 5. Diff structure and path safety
+  const parsedDiff = parseUnifiedDiff(parsed.diff);
+  if (!parsedDiff.valid) {
+    return {
+      success: false,
+      error: {
+        code: 'MALFORMED_DIFF',
+        message: parsedDiff.error || 'Invalid unified diff syntax',
+        details: []
+      }
+    };
+  }
+
+  // 6. Scope check on diff headers
+  for (const diffFile of parsedDiff.files) {
+    if (diffFile !== normalizedFindingPath) {
+      return {
+        success: false,
+        error: {
+          code: 'UNSUPPORTED_FILE_CHANGES',
+          message: `Diff modifies file outside finding scope: "${diffFile}" (expected "${normalizedFindingPath}")`,
+          details: [{ file: diffFile, expected: normalizedFindingPath }]
+        }
+      };
+    }
+  }
+
+  // 7. Scope check on changedFiles (if supplied in output)
+  if (parsed.changedFiles && Array.isArray(parsed.changedFiles)) {
+    for (const f of parsed.changedFiles) {
+      const norm = String(f).replace(/\\/g, '/').replace(/^\/+/, '');
+      if (norm !== normalizedFindingPath) {
+        return {
+          success: false,
+          error: {
+            code: 'UNSUPPORTED_FILE_CHANGES',
+            message: `changedFiles includes file outside finding scope: "${norm}" (expected "${normalizedFindingPath}")`,
+            details: [{ file: norm, expected: normalizedFindingPath }]
+          }
+        };
+      }
+    }
+  }
+
+  // 8. Evidence reference linking
+  let evidenceRefs = [];
+  if (parsed.evidenceReferences && Array.isArray(parsed.evidenceReferences) && parsed.evidenceReferences.length > 0) {
+    const hasEvidenceLink = parsed.evidenceReferences.some(ref => {
+      const refVal = typeof ref === 'object' ? (ref.reference || '') : String(ref);
+      if (!refVal) return false;
+      return (
+        (evidenceText && (evidenceText.includes(refVal) || refVal.includes(evidenceText))) ||
+        (finding.fingerprint && refVal === finding.fingerprint) ||
+        (finding.ruleId && refVal === finding.ruleId) ||
+        (finding.rule && refVal === finding.rule) ||
+        (finding.startLine && refVal.includes(String(finding.startLine)))
+      );
+    });
+
+    if (!hasEvidenceLink) {
+      return {
+        success: false,
+        error: {
+          code: 'MISSING_EVIDENCE_LINK',
+          message: 'Proposal evidenceReferences cannot be linked to the original finding evidence',
+          details: [{ provided: parsed.evidenceReferences, findingEvidence: evidenceText }]
+        }
+      };
+    }
+    evidenceRefs = parsed.evidenceReferences;
+  } else {
+    evidenceRefs = [
+      {
+        type: 'SNIPPET',
+        reference: evidenceText,
+        description: `Linked to finding ${finding.id || ''} evidence`
+      }
+    ];
+  }
+
+  // 9. Format rationale string and keep structured rationale details
+  let rationaleString = '';
+  let rationaleDetails = {};
+  if (typeof parsed.rationale === 'object') {
+    const r = parsed.rationale;
+    rationaleString = `Root cause: ${r.rootCause}\nProposed correction: ${r.proposedCorrection}\nWhy this addresses the finding: ${r.explanation}`;
+    rationaleDetails = r;
+  } else {
+    rationaleString = String(parsed.rationale).trim();
+    rationaleDetails = { explanation: rationaleString };
+  }
+
+  // 10. Assemble canonical PatchProposal
+  const proposal = {
+    id: `prop_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+    findingId: finding.id || 'finding_unknown',
+    diff: parsed.diff.trim(),
+    rationale: rationaleString,
+    changedFiles: [normalizedFindingPath],
+    evidenceReferences: evidenceRefs,
+    reviewState: PATCH_REVIEW_STATES.PENDING_REVIEW,
+    reviewedBy: null,
+    reviewedAt: null,
+    reviewComments: null,
+    createdAt: new Date().toISOString(),
+    metadata: {
+      model: options.model || 'gemma-2-9b-it',
+      promptVersion: options.promptVersion || '1.0.0',
+      applied: false,
+      requiresHumanReview: true,
+      verified: false,
+      rationaleDetails,
+      ...(parsed.metadata || {})
+    }
+  };
+
+  // 11. Final canonical schema & scope validation
+  const validation = validatePatchProposal(proposal);
+  if (!validation.success) {
+    return {
+      success: false,
+      error: {
+        code: 'INVALID_PATCH_PROPOSAL_SCHEMA',
+        message: 'Assembled proposal failed canonical validation',
+        details: validation.error.issues
+      }
+    };
+  }
+
+  const scopeValidation = validateProposalScope(proposal, finding);
+  if (!scopeValidation.valid) {
+    return {
+      success: false,
+      error: {
+        code: 'OUT_OF_SCOPE_MODIFICATION',
+        message: scopeValidation.error,
+        details: []
+      }
+    };
+  }
+
+  return {
+    success: true,
+    data: proposal
+  };
+}
+
 module.exports = {
   PATCH_REVIEW_STATES,
   PatchReviewStateEnum,
   ALLOWED_REVIEW_STATE_TRANSITIONS,
   InvalidReviewStateTransitionError,
   OutOfScopeProposalError,
+  MissingEvidenceLinkError,
 
   parseUnifiedDiff,
   validateUnifiedDiff,
@@ -420,6 +745,8 @@ module.exports = {
   EvidenceReferenceSchema,
   CreatePatchProposalSchema,
   PatchProposalSchema,
+  AIPatchRationaleSchema,
+  AIPatchProposalOutputSchema,
 
   validateProposalScope,
   assertProposalScope,
@@ -427,5 +754,6 @@ module.exports = {
   transitionReviewState,
 
   validatePatchProposal,
-  validateCreatePatchProposal
+  validateCreatePatchProposal,
+  parseAndValidateAIPatchProposal
 };

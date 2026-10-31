@@ -1,0 +1,17 @@
+{
+  "diff": "--- a/../../../etc/passwd\n+++ b/../../../etc/passwd\n@@ -1,1 +1,1 @@\n-root:x:0:0:root:/root:/bin/bash\n+root:x:0:0:root:/root:/bin/sh\n",
+  "rationale": {
+    "rootCause": "Unsafe path traversal injection in diff headers",
+    "proposedCorrection": "Attempted path escape",
+    "explanation": "Trying to modify root system files"
+  },
+  "changedFiles": [
+    "../../../etc/passwd"
+  ],
+  "evidenceReferences": [
+    {
+      "type": "SNIPPET",
+      "reference": "const query = `SELECT * FROM users WHERE id = ${id}`;"
+    }
+  ]
+}

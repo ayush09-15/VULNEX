@@ -27,11 +27,17 @@ module.exports = {
   PatchReviewStateEnum: patchProposal.PatchReviewStateEnum,
   PatchProposalSchema: patchProposal.PatchProposalSchema,
   CreatePatchProposalSchema: patchProposal.CreatePatchProposalSchema,
+  AIPatchRationaleSchema: patchProposal.AIPatchRationaleSchema,
+  AIPatchProposalOutputSchema: patchProposal.AIPatchProposalOutputSchema,
+  MissingEvidenceLinkError: patchProposal.MissingEvidenceLinkError,
+  OutOfScopeProposalError: patchProposal.OutOfScopeProposalError,
+  InvalidReviewStateTransitionError: patchProposal.InvalidReviewStateTransitionError,
   validatePatchProposal: patchProposal.validatePatchProposal,
   validateCreatePatchProposal: patchProposal.validateCreatePatchProposal,
   validateProposalScope: patchProposal.validateProposalScope,
   assertProposalScope: patchProposal.assertProposalScope,
   transitionReviewState: patchProposal.transitionReviewState,
   parseUnifiedDiff: patchProposal.parseUnifiedDiff,
-  validateUnifiedDiff: patchProposal.validateUnifiedDiff
+  validateUnifiedDiff: patchProposal.validateUnifiedDiff,
+  parseAndValidateAIPatchProposal: patchProposal.parseAndValidateAIPatchProposal
 };

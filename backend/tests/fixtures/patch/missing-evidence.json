@@ -1,0 +1,17 @@
+{
+  "diff": "--- a/src/routes/user.js\n+++ b/src/routes/user.js\n@@ -42,2 +42,2 @@\n-  const x = 1;\n+  const x = 2;\n",
+  "rationale": {
+    "rootCause": "Arbitrary change",
+    "proposedCorrection": "Changed variable value",
+    "explanation": "No link to vulnerability"
+  },
+  "changedFiles": [
+    "src/routes/user.js"
+  ],
+  "evidenceReferences": [
+    {
+      "type": "SNIPPET",
+      "reference": "COMPLETELY_FABRICATED_UNLINKED_SNIPPET_DOES_NOT_EXIST"
+    }
+  ]
+}
