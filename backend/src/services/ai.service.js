@@ -4,24 +4,41 @@ const {
 } = require('../validators/investigation.schema');
 const {
   PROMPT_VERSION,
-  REMEDIATION_GUIDANCE,
   redactSecrets,
-  formatBoundedExcerpt,
-  getSystemInstruction,
   buildInvestigationPrompt
 } = require('./ai.prompt');
+const {
+  GoogleAIModelAdapter,
+  AIQuotaExceededError,
+  AITimeoutError
+} = require('./ai.adapter');
+const config = require('../config/env');
 
 /**
  * AI Service for VULNEX
  * Handles evidence-bounded AI vulnerability investigation, root-cause diagnosis,
- * and automated security patch generation.
+ * and automated security patch generation via configured model adapter.
  */
 class AIService {
-  constructor() {
-    this.apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '';
-    this.model = process.env.GEMMA_MODEL || process.env.GEMINI_MODEL || 'gemma-2-9b-it';
-    this.timeoutMs = parseInt(process.env.AI_TIMEOUT_MS, 10) || 15000;
+  constructor(options = {}) {
+    this.apiKey = options.apiKey !== undefined ? options.apiKey : config.ai.apiKey;
+    this.model = options.model || config.ai.model || 'gemma-2-9b-it';
+    this.timeoutMs = options.timeoutMs !== undefined ? options.timeoutMs : config.ai.timeoutMs;
     this.promptVersion = PROMPT_VERSION;
+
+    // Server-side model adapter instance
+    this.adapter = new GoogleAIModelAdapter({
+      apiKey: this.apiKey,
+      model: this.model,
+      timeoutMs: this.timeoutMs
+    });
+  }
+
+  /**
+   * Return active model metadata without leaking secrets
+   */
+  getModelInfo() {
+    return this.adapter.getModelInfo();
   }
 
   /**
@@ -44,15 +61,26 @@ class AIService {
    * @returns {Promise<Object>}
    */
   async analyzeVulnerability(finding, codeContext = '') {
-    if (this.apiKey) {
+    if (this.adapter.isAvailable()) {
       try {
         return await this._callGeminiAnalysis(finding, codeContext);
       } catch (err) {
-        console.warn('[AIService] Remote AI call failed, falling back to local analysis:', err.message);
+        console.warn('[AIService] Remote AI model call failed, falling back to local analysis:', err.message);
+
+        // If quota exceeded or timeout occurred, produce structured fallback with explicit limitation
+        if (err instanceof AIQuotaExceededError || err instanceof AITimeoutError) {
+          return createFallbackInvestigation({
+            findingId: finding?.id || 'finding_unknown',
+            reason: `AI model unavailable: ${err.message}`,
+            model: this.model,
+            promptVersion: this.promptVersion,
+            finding
+          });
+        }
       }
     }
 
-    // Heuristic fallback analysis when API key is not yet configured or fails
+    // Heuristic fallback analysis when API key is not configured or remote fails
     const localOutput = this._localAnalysis(finding, codeContext);
     return {
       ...localOutput,
@@ -100,7 +128,7 @@ class AIService {
    * @returns {Promise<Object>}
    */
   async generatePatch(finding, originalCode = '') {
-    if (this.apiKey) {
+    if (this.adapter.isAvailable()) {
       try {
         return await this._callGeminiPatch(finding, originalCode);
       } catch (err) {
@@ -226,80 +254,30 @@ class AIService {
       findingId: finding.id,
       originalCode,
       patchedCode,
-      explanation,
+      explanation: 'AI-generated fix via ' + this.model,
       generatedAt: new Date().toISOString()
     };
   }
 
   async _callGeminiAnalysis(finding, codeContext) {
     const promptPayload = this.buildInvestigationPrompt(finding, codeContext);
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const completion = await this.adapter.generateCompletion({
+      systemInstruction: promptPayload.systemInstruction,
+      userPrompt: promptPayload.userPrompt,
+      jsonMode: true
+    });
 
-    try {
-      const isGeminiModel = this.model.toLowerCase().includes('gemini');
-      const requestBody = isGeminiModel
-        ? {
-            systemInstruction: {
-              parts: [{ text: promptPayload.systemInstruction }]
-            },
-            contents: [
-              {
-                parts: [{ text: promptPayload.userPrompt }]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1,
-              responseMimeType: 'application/json'
-            }
-          }
-        : {
-            // Google Gemma model format: unified instruction and untrusted data boundary
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: `${promptPayload.systemInstruction}\n\n${promptPayload.userPrompt}` }]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1
-            }
-          };
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => ({}));
-        throw new Error(`Google AI Studio error (${res.status}): ${errorBody?.error?.message || res.statusText}`);
-      }
-
-      const data = await res.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-
-      const processed = this.processInvestigationResponse(text, finding);
-      return {
-        ...processed,
-        modelUsed: this.model,
-        promptVersion: promptPayload.promptVersion,
-        contextSupplied: promptPayload.contextSupplied
-      };
-    } catch (err) {
-      clearTimeout(timeoutId);
-      throw err;
-    }
+    const processed = this.processInvestigationResponse(completion.text, finding);
+    return {
+      ...processed,
+      modelUsed: this.model,
+      promptVersion: promptPayload.promptVersion,
+      contextSupplied: promptPayload.contextSupplied
+    };
   }
 
   async _callGeminiPatch(finding, originalCode) {
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
     const prompt = `Fix this security vulnerability:
 Vulnerability: ${finding.name || finding.title} (${finding.cwe || finding.category})
 Code:
@@ -307,39 +285,18 @@ ${originalCode || finding.codeSnippet}
 
 Provide the patched code and explanation.`;
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const completion = await this.adapter.generateCompletion({
+      userPrompt: prompt,
+      jsonMode: false
+    });
 
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }]
-        }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        const errorBody = await res.json().catch(() => ({}));
-        throw new Error(`Google AI Studio error (${res.status}): ${errorBody?.error?.message || res.statusText}`);
-      }
-
-      const data = await res.json();
-      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      return {
-        findingId: finding.id,
-        modelUsed: this.model,
-        patchedCode: text,
-        explanation: 'AI-generated fix via ' + this.model,
-        generatedAt: new Date().toISOString()
-      };
-    } catch (err) {
-      clearTimeout(timeoutId);
-      throw err;
-    }
+    return {
+      findingId: finding.id,
+      modelUsed: this.model,
+      patchedCode: completion.text,
+      explanation: 'AI-generated fix via ' + this.model,
+      generatedAt: new Date().toISOString()
+    };
   }
 }
 
