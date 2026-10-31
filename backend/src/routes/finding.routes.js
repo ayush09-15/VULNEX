@@ -192,7 +192,7 @@ router.post('/:id/analyze', async (req, res) => {
 // ----------------------------------------------------------------------------
 // POST /api/findings/:id/generate-patch - Generate AI patch
 // ----------------------------------------------------------------------------
-router.post('/:id/generate-patch', async (req, res) => {
+router.post(['/:id/patches', '/:id/generate-patch'], async (req, res) => {
   try {
     const finding = scanOrchestrator.getFindingById(req.params.id) || scannerService.getFindingById(req.params.id);
     if (!finding) {
@@ -277,6 +277,13 @@ router.post('/:id/apply-patch', async (req, res) => {
         code: 'FINDING_NOT_FOUND',
         message: `Finding '${req.params.id}' not found.`
       }, 404);
+    }
+
+    if (req.body?.approved !== true) {
+      return apiResponse.error(res, {
+        code: 'APPROVAL_REQUIRED',
+        message: 'Patch application requires explicit user approval (approved: true).'
+      }, 403);
     }
 
     const patchedContent = req.body?.patchedCode || finding.proposedPatch?.patchedCode;

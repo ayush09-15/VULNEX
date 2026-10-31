@@ -20,9 +20,6 @@ const {
   validateProposalScope,
   parseAndValidateAIPatchProposal
 } = require('../validators/patchProposal.schema');
-  redactSecrets,
-  buildInvestigationPrompt
-} = require('./ai.prompt');
 const {
   GoogleAIModelAdapter,
   AIQuotaExceededError,
