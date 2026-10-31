@@ -180,10 +180,38 @@ function redactSecrets(text) {
     return 'Bearer [REDACTED_JWT]';
   });
 
+  // Mask other Bearer tokens
+  result = result.replace(/\bBearer\s+([a-zA-Z0-9_\-\.]{20,})\b/g, () => {
+    hasRedactions = true;
+    return 'Bearer [REDACTED_BEARER_TOKEN]';
+  });
+
   // Mask AWS API Keys
-  result = result.replace(/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/g, () => {
+  result = result.replace(/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{12,24}\b/g, () => {
     hasRedactions = true;
     return '[REDACTED_AWS_KEY]';
+  });
+
+  // Mask GitHub tokens
+  result = result.replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{30,255}\b/g, () => {
+    hasRedactions = true;
+    return '[REDACTED_GITHUB_TOKEN]';
+  });
+
+  // Mask Google API keys
+  result = result.replace(/\bAIza[0-9A-Za-z\-_]{30,45}\b/g, () => {
+    hasRedactions = true;
+    return '[REDACTED_API_KEY]';
+  });
+
+  // Mask Database & Service connection URIs
+  result = result.replace(/((?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|amqp(?:s)?|mariadb|cockroachdb):\/\/[^:\s\/]+:)([^@\s\/]+)(@)/gi, () => {
+    hasRedactions = true;
+    return '$1[REDACTED_PASSWORD]$3';
+  });
+  result = result.replace(/((?:redis(?:s)?):\/\/(?:[^:\s\/]+)?:)([^@\s\/]+)(@)/gi, () => {
+    hasRedactions = true;
+    return '$1[REDACTED_PASSWORD]$3';
   });
 
   // Mask private key headers
@@ -193,7 +221,7 @@ function redactSecrets(text) {
   });
 
   // Mask password assignments (avoid re-redacting already masked placeholders)
-  result = result.replace(/(password|passwd|pwd|secret|api_key|apikey|auth_token)\s*([:=])\s*(['"`])(?!\[REDACTED_)([^'"`\s]{4,})\3/gi, (match, key, op, quote) => {
+  result = result.replace(/(password|passwd|pwd|pass|db_pass|dbpass|secret|api_key|apikey|auth_token)\s*([:=])\s*(['"`])(?!\[REDACTED_)([^'"`\s]{4,})\3/gi, (match, key, op, quote) => {
     hasRedactions = true;
     return `${key} ${op} ${quote}[REDACTED_SECRET]${quote}`;
   });
@@ -436,12 +464,28 @@ function getFileExcerpt(workspacePath, relativeFilePath, startLine, endLine, opt
   const fullPath = path.resolve(resolvedRoot, relativeFilePath);
 
   // Containment assertion
-  if (!fullPath.startsWith(resolvedRoot)) {
+  const rootPrefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : resolvedRoot + path.sep;
+  if (!fullPath.startsWith(rootPrefix) && fullPath !== resolvedRoot) {
     throw new Error('Access denied: Target path traverses outside the workspace directory.');
   }
 
   if (!fs.existsSync(fullPath)) {
     throw new Error(`Source file does not exist: ${relativeFilePath}`);
+  }
+
+  // Symlink escape verification: Ensure resolved canonical target stays inside canonical workspace root
+  let realRoot;
+  let realTarget;
+  try {
+    realRoot = fs.realpathSync(resolvedRoot);
+    realTarget = fs.realpathSync(fullPath);
+  } catch {
+    throw new Error('Access denied: Failed to resolve canonical path.');
+  }
+
+  const realPrefix = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
+  if (!realTarget.startsWith(realPrefix) && realTarget !== realRoot) {
+    throw new Error('Access denied: Target path escapes workspace via symbolic link.');
   }
 
   const contextLines = typeof options.contextLines === 'number' ? Math.max(0, options.contextLines) : 5;

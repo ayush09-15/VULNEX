@@ -1,6 +1,8 @@
+const { redactDeep, redactString } = require('./secretRedactor');
+
 /**
  * Standard VULNEX API Response Utilities
- * Enforces canonical success and error envelope contracts.
+ * Enforces canonical success and error envelope contracts with automated secret redaction.
  */
 
 /**
@@ -14,7 +16,7 @@ function success(res, data = {}, statusCode = 200) {
 
   return res.status(statusCode).json({
     success: true,
-    data,
+    data: redactDeep(data),
     requestId
   });
 }
@@ -34,11 +36,11 @@ function error(res, { code = 'INTERNAL_SERVER_ERROR', message = 'An unexpected e
 
   const errorPayload = {
     code: String(code).toUpperCase(),
-    message: String(message)
+    message: typeof message === 'string' ? redactString(message) : redactString(String(message))
   };
 
   if (details !== undefined && details !== null) {
-    errorPayload.details = details;
+    errorPayload.details = redactDeep(details);
   }
 
   return res.status(statusCode).json({

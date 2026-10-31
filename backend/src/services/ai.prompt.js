@@ -9,6 +9,7 @@
  */
 
 const { BOUNDS } = require('../validators/investigation.schema');
+const { redactString } = require('../utils/secretRedactor');
 
 const PROMPT_VERSION = '1.0.0';
 
@@ -57,21 +58,7 @@ const SECRET_PATTERNS = [
  */
 function redactSecrets(text) {
   if (typeof text !== 'string') return '';
-  let sanitized = text;
-
-  // AWS Access Keys (standard 16 alphanumeric after AKIA, with tolerance for test fixtures)
-  sanitized = sanitized.replace(/\b(AKIA[0-9A-Z]{12,24})\b/g, '[REDACTED_AWS_KEY]');
-  // GitHub Tokens
-  sanitized = sanitized.replace(/\b(gh[pousr]_[A-Za-z0-9_]{36,255})\b/g, '[REDACTED_GITHUB_TOKEN]');
-  // Bearer Tokens
-  sanitized = sanitized.replace(/\bBearer\s+([a-zA-Z0-9_\-\.]{24,})\b/g, 'Bearer [REDACTED_BEARER_TOKEN]');
-  // Generic assignment patterns with negative lookahead to prevent re-redacting markers
-  sanitized = sanitized.replace(
-    /((?:api[_-]?key|secret|password|auth_token)\s*[:=]\s*['"])(?!\[REDACTED_)([^'"]{4,})(['"])/gi,
-    '$1[REDACTED_SECRET]$3'
-  );
-
-  return sanitized;
+  return redactString(text);
 }
 
 /**
