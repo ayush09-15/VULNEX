@@ -1,0 +1,13 @@
+{
+  "version": "1.136.0",
+  "results": [],
+  "errors": [],
+  "paths": {
+    "scanned": ["src/app.js", "src/server.js"],
+    "skipped": []
+  },
+  "time": {
+    "rules": {},
+    "total_time": 0.42
+  }
+}

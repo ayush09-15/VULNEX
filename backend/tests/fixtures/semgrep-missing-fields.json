@@ -1,0 +1,13 @@
+{
+  "results": [
+    {
+      "check_id": "minimal.rule.no.optional.fields",
+      "path": "src/utils/calc.js",
+      "start": { "line": 5, "col": 1 },
+      "end": { "line": 5, "col": 10 },
+      "extra": {
+        "severity": "INFO"
+      }
+    }
+  ]
+}

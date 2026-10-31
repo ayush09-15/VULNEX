@@ -1,0 +1,7 @@
+{
+  "version": "1.136.0",
+  "results": [
+    {
+      "check_id": "broken.json.syntax",
+      "path": "src/broken.js",
+      "start": { "line": 1,
