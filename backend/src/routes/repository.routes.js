@@ -26,7 +26,7 @@ router.get('/', (req, res) => {
  */
 router.post('/', (req, res) => {
   try {
-    const { sourceType, displayName, sourceUrl, defaultRef, zipBase64 } = req.body;
+    const { sourceType, displayName, sourceUrl, defaultRef, zipBase64 } = req.body || {};
 
     if (!sourceType) {
       return apiResponse.error(res, {

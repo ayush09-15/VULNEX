@@ -262,9 +262,15 @@ function extractZipArchive(zipInput, destinationDir, options = {}) {
   };
 }
 
+function ingestZipArchive(zipBuffer, options = {}) {
+  const repositoryService = require('./repository.service');
+  return repositoryService.ingestZipArchive(zipBuffer, options);
+}
+
 module.exports = {
   validateZipArchive,
   extractZipArchive,
+  ingestZipArchive,
   DEFAULT_MAX_ENTRIES,
   DEFAULT_MAX_UNCOMPRESSED_BYTES,
   DEFAULT_MAX_FILE_BYTES

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, useOutletContext } from 'react-router-dom';
 import {
   Play,
   Loader2,
@@ -50,6 +50,7 @@ function getStageStatus(stageKey, currentStage, scanStatus) {
 export default function ScanPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { setActiveRepo } = useOutletContext() || {};
 
   // Intake State
   const [targetType, setTargetType] = useState('FIXTURE'); // 'FIXTURE' | 'GITHUB' | 'ZIP'
@@ -180,6 +181,17 @@ export default function ScanPage() {
       }
 
       setLastTargetRepoId(repositoryId);
+      if (setActiveRepo) {
+        const repoName = targetType === 'GITHUB'
+          ? (gitUrl.trim().split('/').pop() || 'github-repo')
+          : (targetType === 'ZIP' ? (zipFile?.name || 'uploaded-archive') : 'intentionally-vulnerable-node-app');
+        setActiveRepo({
+          id: repositoryId,
+          displayName: repoName,
+          defaultRef: refName.trim() || 'main',
+          sourceType: targetType
+        });
+      }
       setActiveStage('SCANNING');
       const scanRes = await vulnexApi.scans.start({
         repositoryId,
@@ -592,11 +604,14 @@ export default function ScanPage() {
         isScanning={isScanning}
         isRetrying={isRetrying}
         onRetry={handleRetryScan}
-        onViewFindings={() =>
-          navigate('/findings', {
+        onViewFindings={() => {
+          if (scanRecord?.id) {
+            localStorage.setItem('vulnex_selected_scan_id', scanRecord.id);
+          }
+          navigate(scanRecord?.id ? `/findings?scanId=${scanRecord.id}` : '/findings', {
             state: { scanId: scanRecord?.id, scanRecord },
-          })
-        }
+          });
+        }}
         onReset={handleResetScan}
       />
     </div>

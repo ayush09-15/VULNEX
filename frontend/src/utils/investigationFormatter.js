@@ -48,8 +48,18 @@ export function formatInvestigationData(raw) {
   const meta = ASSESSMENT_CONFIG[assessment] || ASSESSMENT_CONFIG.UNCERTAIN;
 
   const toArray = (val) => {
-    if (Array.isArray(val)) return val.filter(Boolean).map(String);
+    if (Array.isArray(val)) {
+      return val.filter(Boolean).map((item) => {
+        if (typeof item === 'object' && item !== null) {
+          return item.reference || item.evidence || item.text || item.snippet || item.message || JSON.stringify(item);
+        }
+        return String(item);
+      });
+    }
     if (val && typeof val === 'string') return [val.trim()];
+    if (val && typeof val === 'object') {
+      return [val.reference || val.evidence || val.text || val.snippet || val.message || JSON.stringify(val)];
+    }
     return [];
   };
 

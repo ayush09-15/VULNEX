@@ -38,7 +38,7 @@ router.get('/', (req, res) => {
  */
 router.post('/', async (req, res) => {
   try {
-    const { repositoryId, ref, scanners, repositoryPath } = req.body;
+    const { repositoryId, ref, scanners, repositoryPath } = req.body || {};
 
     if (!repositoryId) {
       return apiResponse.error(res, {
@@ -48,7 +48,7 @@ router.post('/', async (req, res) => {
     }
 
     // Determine target workspace path
-    let targetPath = repositoryPath;
+    let targetPath = repositoryPath || null;
     if (!targetPath && repositoryId) {
       const repo = repositoryService.getRepositoryById(repositoryId);
       if (repo && repo.workspacePath) {
@@ -56,9 +56,18 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // Default to local workspace or fixture if not specified
-    if (!targetPath) {
-      targetPath = './';
+    // Guard against scanning server host codebase directly
+    const path = require('path');
+    const serverRoot = path.resolve(__dirname, '../../');
+    const projectRoot = path.resolve(__dirname, '../../../');
+    if (targetPath) {
+      const resolved = path.resolve(targetPath);
+      if (resolved === serverRoot || resolved === projectRoot) {
+        return apiResponse.error(res, {
+          code: 'WORKSPACE_ERROR',
+          message: 'Access denied: Scanning the VULNEX application root is prohibited by repository isolation policy.'
+        }, 400);
+      }
     }
 
     const validation = validateCreateScan({
@@ -70,7 +79,7 @@ router.post('/', async (req, res) => {
     if (!validation.success) {
       return apiResponse.error(res, {
         code: 'INVALID_INPUT',
-        message: validation.error.issues[0]?.message || 'Invalid scan request parameters.',
+        message: validation.error?.issues?.[0]?.message || 'Invalid scan request parameters.',
         details: validation.error.issues
       }, 400);
     }

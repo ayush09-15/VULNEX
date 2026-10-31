@@ -5,6 +5,8 @@ const { ScanStateMachine, SCAN_STATES, isTerminalState } = require('./scanStateM
 const inventoryService = require('../services/inventory.service');
 const { semgrepService } = require('../services/semgrep.service');
 const npmAuditService = require('../services/npmAudit.service');
+const repositoryService = require('../services/repository.service');
+const syntaxAwareScanner = require('../services/syntaxAwareScanner');
 const { validateFinding, validateScan } = require('../validators/canonical.schema');
 
 /**
@@ -28,53 +30,7 @@ const scansStore = new Map();
 const findingsStore = new Map();
 
 // Built-in deterministic pattern rules for lightweight/fallback SAST scanning
-const DETERMINISTIC_RULES = [
-  {
-    id: 'vulnex.javascript.sqli',
-    title: 'SQL Injection via unsanitized query parameters',
-    category: 'SQL_INJECTION',
-    severity: 'CRITICAL',
-    confidence: 'HIGH',
-    pattern: /(?:query|execute|raw)\s*\(\s*[`'"].*?\$\{.*?\}|SELECT\s+.*?\s+FROM\s+.*?(?:\+\s*[\w\.]+|\$\{.*?\})/i,
-    message: 'Direct concatenation or interpolation of untrusted input into SQL queries detected.'
-  },
-  {
-    id: 'vulnex.javascript.cmd-injection',
-    title: 'Command Injection via child_process execution',
-    category: 'COMMAND_INJECTION',
-    severity: 'CRITICAL',
-    confidence: 'HIGH',
-    pattern: /(?:child_process|cp)\.(?:exec|execSync)\s*\(\s*[`'"].*?\$\{.*?\}|eval\s*\(|new\s+Function\s*\(/,
-    message: 'Dynamic untrusted argument passed to system command or code evaluation.'
-  },
-  {
-    id: 'vulnex.javascript.hardcoded-secret',
-    title: 'Hard-coded Secret / API Token',
-    category: 'HARDCODED_SECRET',
-    severity: 'HIGH',
-    confidence: 'HIGH',
-    pattern: /(?:api_?key|secret|password|auth_?token|jwt_?secret)\s*[:=]\s*['"`][A-Za-z0-9_\-\.]{16,}['"`]/i,
-    message: 'Sensitive credential or secret key embedded directly into source code.'
-  },
-  {
-    id: 'vulnex.javascript.path-traversal',
-    title: 'Path Traversal via unsanitized file system access',
-    category: 'PATH_TRAVERSAL',
-    severity: 'HIGH',
-    confidence: 'MEDIUM',
-    pattern: /fs\.(?:readFile|readFileSync|createReadStream)\s*\(\s*(?:req\.(?:query|params|body)|path\.join\([^)]*req\.)/,
-    message: 'File read operation using unsanitized user path allows directory traversal.'
-  },
-  {
-    id: 'vulnex.javascript.xss',
-    title: 'Cross-Site Scripting (XSS) via unescaped HTML injection',
-    category: 'XSS',
-    severity: 'HIGH',
-    confidence: 'HIGH',
-    pattern: /dangerouslySetInnerHTML|innerHTML\s*=\s*(?:req\.|props\.|[^'"]*\+)|<[a-z0-9_-]+>.*?\$\{.*?\}/i,
-    message: 'Direct insertion of untrusted data into DOM without context-aware output encoding.'
-  }
-];
+const DETERMINISTIC_RULES = syntaxAwareScanner.DETERMINISTIC_RULES;
 
 /**
  * Generate a deterministic fingerprint for a finding (SHA-256 of ruleId + filePath + snippet)
@@ -150,63 +106,11 @@ function recordEvent(scanRecord, stage, status, message, details = {}) {
  * @param {string} workspacePath
  * @param {Array<Object>} sourceFiles
  * @param {string} scanId
+ * @param {Object} [options={}]
  * @returns {Array<Object>}
  */
-function scanWithDeterministicPatterns(workspacePath, sourceFiles, scanId) {
-  const findings = [];
-  const nonCodeExts = new Set(['.md', '.txt', '.rst', '.markdown', '.map']);
-
-  for (const fileInfo of sourceFiles) {
-    const ext = path.extname(fileInfo.path || '').toLowerCase();
-    if (nonCodeExts.has(ext)) continue;
-
-    const fullPath = path.join(workspacePath, fileInfo.path);
-    let content;
-    try {
-      content = fs.readFileSync(fullPath, 'utf8');
-    } catch {
-      continue;
-    }
-
-    const lines = content.split('\n');
-
-    for (const rule of DETERMINISTIC_RULES) {
-      if (!rule.pattern.test(content)) continue;
-
-      lines.forEach((lineText, idx) => {
-        if (rule.pattern.test(lineText)) {
-          const lineNumber = idx + 1;
-          const trimmedLine = lineText.trim();
-          const fingerprint = generateFingerprint({
-            ruleId: rule.id,
-            filePath: fileInfo.path,
-            evidence: trimmedLine
-          });
-
-          findings.push({
-            id: `find_${crypto.randomBytes(6).toString('hex')}`,
-            scanId,
-            scanner: 'pattern-sast',
-            ruleId: rule.id,
-            title: rule.title,
-            category: rule.category,
-            severity: rule.severity,
-            confidence: rule.confidence,
-            filePath: fileInfo.path.replace(/\\/g, '/'),
-            startLine: lineNumber,
-            endLine: lineNumber,
-            message: rule.message,
-            evidence: trimmedLine,
-            fingerprint,
-            status: 'DETECTED',
-            createdAt: new Date().toISOString()
-          });
-        }
-      });
-    }
-  }
-
-  return findings;
+function scanWithDeterministicPatterns(workspacePath, sourceFiles, scanId, options = {}) {
+  return syntaxAwareScanner.scanWorkspace(workspacePath, sourceFiles, scanId, options);
 }
 
 /**
@@ -217,6 +121,7 @@ class ScanOrchestrator {
     this.semgrep = semgrepService;
     this.npmAudit = npmAuditService;
     this.inventory = inventoryService;
+    this.repositoryService = repositoryService;
   }
 
   /**
@@ -225,7 +130,7 @@ class ScanOrchestrator {
    * 
    * @param {Object} input
    * @param {string} input.repositoryId - Associated repository ID
-   * @param {string} input.repositoryPath - Absolute or relative path to workspace
+   * @param {string} [input.repositoryPath] - Absolute or relative path to workspace
    * @param {string} [input.ref='main'] - Git branch/tag/ref
    * @param {Array<string>} [input.scanners=['semgrep', 'npm-audit', 'patterns']] - Target scanner engines
    * @param {Object} [options={}]
@@ -235,8 +140,9 @@ class ScanOrchestrator {
    */
   async startScan(input, options = {}) {
     const repositoryId = input.repositoryId || 'repo_default';
-    const repositoryPath = input.repositoryPath || './';
+    const repositoryPath = input.repositoryPath || null;
     const ref = input.ref || 'main';
+    const scanScope = input.scope || options.scope || 'SOURCE_ONLY';
     const configuredScanners = Array.isArray(input.scanners) && input.scanners.length > 0
       ? input.scanners
       : ['semgrep', 'npm-audit', 'patterns'];
@@ -250,17 +156,20 @@ class ScanOrchestrator {
       id: scanId,
       repositoryId,
       ref,
+      scope: scanScope,
       status: SCAN_STATES.QUEUED,
       stage: SCAN_STATES.QUEUED,
       toolVersions: {},
       startedAt: null,
       completedAt: null,
       errorCode: null,
-      workspaceId: options.workspaceId || path.basename(repositoryPath),
+      workspaceId: options.workspaceId || (repositoryPath ? path.basename(repositoryPath) : repositoryId),
+      workspacePath: repositoryPath || null,
       createdAt: new Date().toISOString(),
       events: [],
       summary: {
         totalFindings: 0,
+        testFindingsCount: 0,
         bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0 },
         scannersRun: [],
         scannersFailed: [],
@@ -284,10 +193,31 @@ class ScanOrchestrator {
         scanRecord.startedAt = new Date().toISOString();
         recordEvent(scanRecord, SCAN_STATES.PREPARING, 'IN_PROGRESS', 'Validating workspace and inspecting source tree');
 
-        const resolvedWorkspace = path.resolve(repositoryPath);
+        let targetWorkspace = repositoryPath;
+        if (!targetWorkspace && repositoryId) {
+          try {
+            targetWorkspace = await this.repositoryService.prepareWorkspace(repositoryId, { ref });
+          } catch (prepErr) {
+            const errorMsg = `Workspace preparation failed: ${prepErr.message}`;
+            recordEvent(scanRecord, SCAN_STATES.PREPARING, 'FAILED', errorMsg);
+            stateMachine.fail('WORKSPACE_ERROR', errorMsg);
+            scanRecord.status = SCAN_STATES.FAILED;
+            scanRecord.stage = SCAN_STATES.FAILED;
+            scanRecord.errorCode = 'WORKSPACE_ERROR';
+            scanRecord.completedAt = new Date().toISOString();
+            return scanRecord;
+          }
+        }
 
-        if (!fs.existsSync(resolvedWorkspace)) {
-          const errorMsg = `Workspace path does not exist: ${resolvedWorkspace}`;
+        const resolvedWorkspace = targetWorkspace ? path.resolve(targetWorkspace) : null;
+        const serverRoot = path.resolve(__dirname, '../../');
+        const projectRoot = path.resolve(__dirname, '../../../');
+        const isServerRoot = resolvedWorkspace && (resolvedWorkspace === serverRoot || resolvedWorkspace === projectRoot);
+
+        if (!resolvedWorkspace || !fs.existsSync(resolvedWorkspace) || (isServerRoot && !options.allowServerRoot)) {
+          const errorMsg = !resolvedWorkspace || !fs.existsSync(resolvedWorkspace)
+            ? `Workspace path does not exist: ${resolvedWorkspace || 'undefined'}`
+            : 'Access denied: Scanning the VULNEX application root is prohibited by repository isolation policy.';
           recordEvent(scanRecord, SCAN_STATES.PREPARING, 'FAILED', errorMsg);
           stateMachine.fail('WORKSPACE_NOT_FOUND', errorMsg);
           scanRecord.status = SCAN_STATES.FAILED;
@@ -296,6 +226,9 @@ class ScanOrchestrator {
           scanRecord.completedAt = new Date().toISOString();
           return scanRecord;
         }
+
+        scanRecord.workspaceId = options.workspaceId || path.basename(resolvedWorkspace);
+        scanRecord.workspacePath = resolvedWorkspace;
 
         let inventory;
         try {
@@ -452,14 +385,19 @@ class ScanOrchestrator {
           recordEvent(scanRecord, SCAN_STATES.SCANNING, 'IN_PROGRESS', 'Executing deterministic pattern scanner');
 
           try {
-            const patternFindings = scanWithDeterministicPatterns(resolvedWorkspace, inventory.sourceFiles, scanId);
+            const patternFindings = scanWithDeterministicPatterns(
+              resolvedWorkspace,
+              inventory.sourceFiles,
+              scanId,
+              { scope: scanScope }
+            );
             return {
               scanner: 'pattern-sast',
               status: 'COMPLETED',
               findings: patternFindings,
               errors: [],
               durationMs: Date.now() - start,
-              toolVersion: '1.0.0',
+              toolVersion: '2.0.0',
               diagnostic: null
             };
           } catch (patternErr) {
@@ -585,6 +523,13 @@ class ScanOrchestrator {
 
         const normalizedFindings = [];
         const seenFingerprints = new Set();
+        const seenCrossEngineFindings = new Map();
+
+        const validCategories = [
+          'SQL_INJECTION', 'XSS', 'HARDCODED_SECRET', 'VULNERABLE_DEPENDENCY',
+          'COMMAND_INJECTION', 'CODE_INJECTION', 'PATH_TRAVERSAL', 'INJECTION', 'BROKEN_AUTH',
+          'SENSITIVE_DATA_EXPOSURE', 'SECURITY_MISCONFIG', 'INSECURE_CRYPTO', 'OTHER'
+        ];
 
         for (const raw of rawFindings) {
           // Normalize coordinates and paths
@@ -596,15 +541,41 @@ class ScanOrchestrator {
             ? raw.evidence
             : (raw.codeSnippet || (raw.evidence ? JSON.stringify(raw.evidence) : ''));
 
-          const ruleId = raw.ruleId || raw.rule || raw.check_id || 'generic.security.rule';
+          const isTest = raw.isTestFile !== undefined
+            ? Boolean(raw.isTestFile)
+            : syntaxAwareScanner.isTestFile(cleanPath);
 
-          const fingerprint = raw.fingerprint || generateFingerprint({
-            ruleId,
+          // If scan is SOURCE_ONLY and finding is in a test file, skip it from production findings
+          if (scanScope === 'SOURCE_ONLY' && isTest) {
+            continue;
+          }
+
+          const ruleId = raw.ruleId || raw.rule || raw.check_id || 'generic.security.rule';
+          const rawCat = raw.category ? String(raw.category).toUpperCase() : 'OTHER';
+          const category = validCategories.includes(rawCat) ? rawCat : 'OTHER';
+
+          const crossFp = syntaxAwareScanner.generateCrossEngineFingerprint({
+            category,
             filePath: cleanPath,
+            startLine,
             evidence
           });
 
-          // Deduplicate by stable fingerprint
+          const fingerprint = raw.fingerprint || crossFp;
+
+          // Cross-engine deduplication:
+          if (seenCrossEngineFindings.has(crossFp)) {
+            const existing = seenCrossEngineFindings.get(crossFp);
+            if (!existing.scanners) {
+              existing.scanners = [existing.scanner];
+            }
+            const currentScanner = raw.scanner || 'semgrep';
+            if (!existing.scanners.includes(currentScanner)) {
+              existing.scanners.push(currentScanner);
+            }
+            continue;
+          }
+
           if (seenFingerprints.has(fingerprint)) {
             continue;
           }
@@ -614,26 +585,19 @@ class ScanOrchestrator {
             ? raw.id
             : `find_${crypto.randomBytes(6).toString('hex')}`;
 
-          const validCategories = [
-            'SQL_INJECTION', 'XSS', 'HARDCODED_SECRET', 'VULNERABLE_DEPENDENCY',
-            'COMMAND_INJECTION', 'PATH_TRAVERSAL', 'INJECTION', 'BROKEN_AUTH',
-            'SENSITIVE_DATA_EXPOSURE', 'SECURITY_MISCONFIG', 'OTHER'
-          ];
-          const rawCat = raw.category ? String(raw.category).toUpperCase() : 'OTHER';
-          const category = validCategories.includes(rawCat) ? rawCat : 'OTHER';
-
           const canonicalFinding = {
             id: findingId,
             scanId,
             scanner: raw.scanner || 'semgrep',
+            scanners: [raw.scanner || 'semgrep'],
             ruleId,
             title: raw.title || raw.name || 'Security Finding',
             category,
             severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(raw.severity)
-              ? raw.severity
+              ? (isTest ? 'LOW' : raw.severity)
               : 'MEDIUM',
             confidence: ['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'].includes(raw.confidence)
-              ? raw.confidence
+              ? (isTest ? 'LOW' : raw.confidence)
               : 'MEDIUM',
             filePath: cleanPath,
             startLine,
@@ -641,6 +605,8 @@ class ScanOrchestrator {
             message: raw.message || raw.description || '',
             evidence,
             fingerprint,
+            isTestFile: isTest,
+            scope: isTest ? 'TEST' : 'SOURCE',
             status: 'DETECTED',
             createdAt: raw.createdAt || new Date().toISOString()
           };
@@ -649,11 +615,16 @@ class ScanOrchestrator {
           const valResult = validateFinding(canonicalFinding);
           if (valResult.success) {
             normalizedFindings.push(canonicalFinding);
+            seenCrossEngineFindings.set(crossFp, canonicalFinding);
             findingsStore.set(canonicalFinding.id, canonicalFinding);
 
-            // Update severity metrics
-            if (scanRecord.summary.bySeverity[canonicalFinding.severity] !== undefined) {
-              scanRecord.summary.bySeverity[canonicalFinding.severity]++;
+            if (isTest) {
+              scanRecord.summary.testFindingsCount = (scanRecord.summary.testFindingsCount || 0) + 1;
+            } else {
+              // Update severity metrics only for production findings
+              if (scanRecord.summary.bySeverity[canonicalFinding.severity] !== undefined) {
+                scanRecord.summary.bySeverity[canonicalFinding.severity]++;
+              }
             }
           }
         }
@@ -836,6 +807,13 @@ class ScanOrchestrator {
 
     if (filters.scanId) {
       findings = findings.filter((f) => f.scanId === filters.scanId);
+    } else if (filters.repositoryId) {
+      const repoScanIds = new Set(
+        Array.from(scansStore.values())
+          .filter((s) => s.repositoryId === filters.repositoryId)
+          .map((s) => s.id)
+      );
+      findings = findings.filter((f) => repoScanIds.has(f.scanId));
     }
     if (filters.severity) {
       findings = findings.filter((f) => f.severity.toUpperCase() === filters.severity.toUpperCase());

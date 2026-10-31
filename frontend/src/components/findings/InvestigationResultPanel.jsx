@@ -110,7 +110,11 @@ export default function InvestigationResultPanel({
             {data.evidence.map((item, idx) => (
               <div key={idx} className="flex items-start gap-2 text-xs text-slate-300 font-mono">
                 <CheckCircle2 className="w-3.5 h-3.5 text-cyan-500 mt-0.5 flex-shrink-0" />
-                <span className="leading-snug">{item}</span>
+                <span className="leading-snug">
+                  {typeof item === 'object' && item !== null
+                    ? (item.reference || item.evidence || item.text || JSON.stringify(item))
+                    : String(item)}
+                </span>
               </div>
             ))}
           </div>
@@ -130,7 +134,11 @@ export default function InvestigationResultPanel({
               data.preconditions.map((item, idx) => (
                 <div key={idx} className="flex items-start gap-1.5">
                   <span className="text-amber-500 font-bold">•</span>
-                  <span>{item}</span>
+                  <span>
+                    {typeof item === 'object' && item !== null
+                      ? (item.reference || item.evidence || item.text || JSON.stringify(item))
+                      : String(item)}
+                  </span>
                 </div>
               ))
             ) : (

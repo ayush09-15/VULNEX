@@ -97,35 +97,94 @@ class SemgrepParser {
    * @returns {string} Category string
    */
   deriveCategory(checkId = '', metadata = {}) {
-    const combined = `${checkId} ${JSON.stringify(metadata)}`.toLowerCase();
+    const rawCheckId = String(checkId || '').toLowerCase();
+    const meta = metadata && typeof metadata === 'object' ? metadata : {};
 
-    if (combined.includes('cwe-89') || combined.includes('sql-injection') || combined.includes('sqli')) {
+    // 1. Extract explicit CWEs from metadata (string or array)
+    const cweEntries = [];
+    if (meta.cwe) {
+      if (Array.isArray(meta.cwe)) cweEntries.push(...meta.cwe);
+      else cweEntries.push(String(meta.cwe));
+    }
+    if (meta.cwe_id) {
+      if (Array.isArray(meta.cwe_id)) cweEntries.push(...meta.cwe_id);
+      else cweEntries.push(String(meta.cwe_id));
+    }
+    const cweCombined = cweEntries.join(' ').toLowerCase();
+
+    // Explicit CWE mapping takes highest priority
+    if (/cwe-89\b/i.test(cweCombined)) return 'SQL_INJECTION';
+    if (/cwe-78\b/i.test(cweCombined)) return 'COMMAND_INJECTION';
+    if (/cwe-(?:94|95)\b/i.test(cweCombined)) return 'CODE_INJECTION';
+    if (/cwe-79\b/i.test(cweCombined)) return 'XSS';
+    if (/cwe-(?:22|23)\b/i.test(cweCombined)) return 'PATH_TRAVERSAL';
+    if (/cwe-(?:798|259|312)\b/i.test(cweCombined)) return 'HARDCODED_SECRET';
+    if (/cwe-(?:327|328)\b/i.test(cweCombined)) return 'INSECURE_CRYPTO';
+    if (/cwe-942\b/i.test(cweCombined)) return 'SECURITY_MISCONFIG';
+    if (/cwe-(?:287|306)\b/i.test(cweCombined)) return 'BROKEN_AUTH';
+
+    // 2. Inspect rule ID and metadata (exclude 'author' to avoid false auth matches)
+    const metaSafe = { ...meta };
+    delete metaSafe.author;
+
+    const metaString = JSON.stringify(metaSafe).toLowerCase();
+    const combined = `${rawCheckId} ${metaString}`;
+
+    // SQL Injection
+    if (/\b(?:sql[_-]?injection|sqli)\b/i.test(combined) || combined.includes('cwe-89')) {
       return 'SQL_INJECTION';
     }
-    if (combined.includes('cwe-78') || combined.includes('command-injection') || combined.includes('rce') || combined.includes('exec')) {
+
+    // Code Injection (CWE-95 / CWE-94: dynamic eval, Function constructor)
+    if (
+      /\b(?:code[_-]?injection|eval[_-]?injection|eval[_-]with[_-]expression|detect[_-]eval)\b/i.test(combined) ||
+      combined.includes('cwe-95') || combined.includes('cwe-94')
+    ) {
+      return 'CODE_INJECTION';
+    }
+
+    // Command Injection (CWE-78: shell execution, child_process OS commands)
+    // NEVER match regex-exec or bare 'exec'
+    if (
+      !rawCheckId.includes('regex') &&
+      (/\b(?:command[_-]?injection|shell[_-]?injection|os[_-]?command|shell[_-]?exec|child_process)\b/i.test(combined) ||
+       combined.includes('cwe-78'))
+    ) {
       return 'COMMAND_INJECTION';
     }
-    if (combined.includes('cwe-79') || combined.includes('xss') || combined.includes('cross-site-scripting')) {
+
+    // Cross-Site Scripting (XSS)
+    if (/\b(?:xss|cross[_-]?site[_-]?scripting)\b/i.test(combined) || combined.includes('cwe-79')) {
       return 'XSS';
     }
-    if (combined.includes('cwe-22') || combined.includes('path-traversal') || combined.includes('directory-traversal')) {
+
+    // Path Traversal
+    if (/\b(?:path[_-]?traversal|directory[_-]?traversal)\b/i.test(combined) || combined.includes('cwe-22')) {
       return 'PATH_TRAVERSAL';
     }
-    if (combined.includes('cwe-798') || combined.includes('secret') || combined.includes('api-key') || combined.includes('credential')) {
+
+    // Hardcoded Secret
+    if (/\b(?:hardcoded[_-]?secret|api[_-]?key|jwt[_-]?secret|credential)\b/i.test(combined) || combined.includes('cwe-798')) {
       return 'HARDCODED_SECRET';
     }
-    if (combined.includes('cwe-328') || combined.includes('crypto') || combined.includes('insecure-hash')) {
+
+    // Insecure Cryptography
+    if (/\b(?:insecure[_-]?hash|insecure[_-]?crypto|broken[_-]?crypto)\b/i.test(combined) || combined.includes('cwe-328')) {
       return 'INSECURE_CRYPTO';
     }
-    if (combined.includes('cwe-942') || combined.includes('cors') || combined.includes('misconfig')) {
+
+    // Security Misconfiguration
+    if (/\b(?:cors[_-]?wildcard|misconfig|security[_-]?misconfig)\b/i.test(combined) || combined.includes('cwe-942')) {
       return 'SECURITY_MISCONFIG';
     }
-    if (combined.includes('auth') || combined.includes('jwt') || combined.includes('session')) {
+
+    // Broken Authentication (word boundary only)
+    if (/\b(?:broken[_-]?auth|jwt[_-]?verification|session[_-]?fixation|missing[_-]?auth)\b/i.test(combined)) {
       return 'BROKEN_AUTH';
     }
 
-    if (metadata.category && typeof metadata.category === 'string') {
-      return metadata.category.toUpperCase().replace(/[\s-]+/g, '_');
+    if (meta.category && typeof meta.category === 'string') {
+      return meta.category.toUpperCase().replace(/[\s-]+/g, '_');
     }
 
     return 'OTHER';

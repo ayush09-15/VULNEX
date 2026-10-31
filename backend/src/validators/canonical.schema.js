@@ -74,11 +74,13 @@ const VulnerabilityCategoryEnum = z.enum([
   'HARDCODED_SECRET',
   'VULNERABLE_DEPENDENCY',
   'COMMAND_INJECTION',
+  'CODE_INJECTION',
   'PATH_TRAVERSAL',
   'INJECTION',
   'BROKEN_AUTH',
   'SENSITIVE_DATA_EXPOSURE',
   'SECURITY_MISCONFIG',
+  'INSECURE_CRYPTO',
   'OTHER'
 ]);
 
@@ -219,6 +221,9 @@ const FindingSchema = z.object({
   evidence: z.union([z.string(), z.record(z.any())]).default(''),
   fingerprint: z.string().min(1, 'Stable fingerprint required'),
   status: FindingStatusEnum.default('DETECTED'),
+  isTestFile: z.boolean().optional(),
+  scope: z.enum(['SOURCE', 'TEST']).optional(),
+  scanners: z.array(z.string()).optional(),
   createdAt: z.string().datetime({ message: 'Must be ISO-8601 UTC timestamp' })
 }).refine(
   (data) => data.endLine >= data.startLine,

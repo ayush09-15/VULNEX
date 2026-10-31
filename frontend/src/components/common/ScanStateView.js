@@ -510,30 +510,36 @@ export default function ScanStateView({
       // Severity Metrics Bar
       h(
         'div',
-        { className: 'grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-slate-800/80' },
+        { className: 'grid grid-cols-2 sm:grid-cols-6 gap-2.5 pt-2 border-t border-slate-800/80' },
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-red-400 font-semibold uppercase' }, 'Critical'),
-          h('div', { className: 'text-lg font-extrabold text-red-300 mt-0.5' }, metrics.bySeverity.CRITICAL)
+          h('div', { className: 'text-lg font-extrabold text-red-300 mt-0.5' }, metrics.bySeverity.CRITICAL || 0)
         ),
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-orange-400 font-semibold uppercase' }, 'High'),
-          h('div', { className: 'text-lg font-extrabold text-orange-300 mt-0.5' }, metrics.bySeverity.HIGH)
+          h('div', { className: 'text-lg font-extrabold text-orange-300 mt-0.5' }, metrics.bySeverity.HIGH || 0)
         ),
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-amber-400 font-semibold uppercase' }, 'Medium'),
-          h('div', { className: 'text-lg font-extrabold text-amber-300 mt-0.5' }, metrics.bySeverity.MEDIUM)
+          h('div', { className: 'text-lg font-extrabold text-amber-300 mt-0.5' }, metrics.bySeverity.MEDIUM || 0)
         ),
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-blue-400 font-semibold uppercase' }, 'Low'),
-          h('div', { className: 'text-lg font-extrabold text-blue-300 mt-0.5' }, metrics.bySeverity.LOW)
+          h('div', { className: 'text-lg font-extrabold text-blue-300 mt-0.5' }, metrics.bySeverity.LOW || 0)
+        ),
+        h(
+          'div',
+          { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
+          h('span', { className: 'text-[10px] font-mono text-slate-400 font-semibold uppercase' }, 'Info'),
+          h('div', { className: 'text-lg font-extrabold text-slate-300 mt-0.5' }, metrics.bySeverity.INFO || 0)
         ),
         h(
           'div',
@@ -605,30 +611,36 @@ export default function ScanStateView({
       // Severity Metrics Bar
       h(
         'div',
-        { className: 'grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-slate-800/80' },
+        { className: 'grid grid-cols-2 sm:grid-cols-6 gap-2.5 pt-2 border-t border-slate-800/80' },
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-red-400 font-semibold uppercase' }, 'Critical'),
-          h('div', { className: 'text-lg font-extrabold text-red-300 mt-0.5' }, metrics.bySeverity.CRITICAL)
+          h('div', { className: 'text-lg font-extrabold text-red-300 mt-0.5' }, metrics.bySeverity.CRITICAL || 0)
         ),
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-orange-400 font-semibold uppercase' }, 'High'),
-          h('div', { className: 'text-lg font-extrabold text-orange-300 mt-0.5' }, metrics.bySeverity.HIGH)
+          h('div', { className: 'text-lg font-extrabold text-orange-300 mt-0.5' }, metrics.bySeverity.HIGH || 0)
         ),
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-amber-400 font-semibold uppercase' }, 'Medium'),
-          h('div', { className: 'text-lg font-extrabold text-amber-300 mt-0.5' }, metrics.bySeverity.MEDIUM)
+          h('div', { className: 'text-lg font-extrabold text-amber-300 mt-0.5' }, metrics.bySeverity.MEDIUM || 0)
         ),
         h(
           'div',
           { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
           h('span', { className: 'text-[10px] font-mono text-blue-400 font-semibold uppercase' }, 'Low'),
-          h('div', { className: 'text-lg font-extrabold text-blue-300 mt-0.5' }, metrics.bySeverity.LOW)
+          h('div', { className: 'text-lg font-extrabold text-blue-300 mt-0.5' }, metrics.bySeverity.LOW || 0)
+        ),
+        h(
+          'div',
+          { className: 'p-3 rounded-xl bg-slate-950/60 border border-slate-800' },
+          h('span', { className: 'text-[10px] font-mono text-slate-400 font-semibold uppercase' }, 'Info'),
+          h('div', { className: 'text-lg font-extrabold text-slate-300 mt-0.5' }, metrics.bySeverity.INFO || 0)
         ),
         h(
           'div',

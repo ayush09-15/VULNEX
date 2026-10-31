@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useOutletContext } from 'react-router-dom';
 import {
   FolderGit2,
   Plus,
@@ -41,6 +41,7 @@ const DEFAULT_REPOS = [
 
 export default function RepositoriesPage() {
   const navigate = useNavigate();
+  const { setActiveRepo } = useOutletContext() || {};
   const [repos, setRepos] = useState(DEFAULT_REPOS);
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -147,6 +148,9 @@ export default function RepositoriesPage() {
   };
 
   const handleScanRepo = (repo) => {
+    if (setActiveRepo) {
+      setActiveRepo(repo);
+    }
     navigate('/scan', {
       state: {
         repositoryId: repo.id,

@@ -19,19 +19,24 @@ const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
 const scannerService = require('../services/scanner.service');
 const patchService = require('../services/patch.service');
 const verificationService = require('../services/verification.service');
+const aiService = require('../services/ai.service');
+const inventoryService = require('../services/inventory.service');
 
 // ----------------------------------------------------------------------------
 // GET /api/findings - List findings with optional query filters
 // ----------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
-    const { scanId, severity, status, category, scanner } = req.query;
+    const { scanId, severity, status, category, scanner, repositoryId } = req.query;
 
-    let findings = scanOrchestrator.getAllFindings({ scanId, severity, status, category, scanner });
-    if (!findings || findings.length === 0) {
+    let findings = scanOrchestrator.getAllFindings({ scanId, severity, status, category, scanner, repositoryId });
+    if (!Array.isArray(findings)) {
       findings = scannerService.getAllFindings();
       if (scanId) {
         findings = findings.filter(f => f.scanId === scanId);
+      }
+      if (repositoryId) {
+        findings = findings.filter(f => f.repositoryId === repositoryId);
       }
       if (severity) {
         findings = findings.filter(f => f.severity && f.severity.toUpperCase() === severity.toUpperCase());
@@ -78,15 +83,35 @@ router.get('/:id', (req, res) => {
     }
 
     const investigation = investigationService.getInvestigationByFindingId(findingId);
-    const enrichedFinding = investigation
-      ? {
-          ...finding,
-          investigationId: investigation.id,
-          aiAssessment: investigation.assessment,
-          aiConfidence: investigation.confidence,
-          investigation
-        }
-      : finding;
+    let sourceContext = null;
+    if (finding.scanId && finding.filePath) {
+      const scan = (typeof scanOrchestrator.getScan === 'function' ? scanOrchestrator.getScan(finding.scanId) : null) ||
+                   (typeof scannerService.getScan === 'function' ? scannerService.getScan(finding.scanId) : null);
+      if (scan && scan.workspacePath) {
+        try {
+          sourceContext = inventoryService.getFileExcerpt(
+            scan.workspacePath,
+            finding.filePath,
+            finding.startLine || 1,
+            finding.endLine || finding.startLine || 1,
+            { contextLines: 4 }
+          );
+        } catch (_) {}
+      }
+    }
+
+    const enrichedFinding = {
+      ...finding,
+      ...(sourceContext ? { sourceContext } : {}),
+      ...(investigation
+        ? {
+            investigationId: investigation.id,
+            aiAssessment: investigation.assessment,
+            aiConfidence: investigation.confidence,
+            investigation
+          }
+        : {})
+    };
 
     return apiResponse.success(res, enrichedFinding, 200);
   } catch (err) {
@@ -180,6 +205,12 @@ router.post('/:id/analyze', async (req, res) => {
     }
 
     const result = await investigationService.investigateFinding(findingId, { codeContext: req.body?.codeContext });
+    if (!result || !result.investigation) {
+      return apiResponse.error(res, {
+        code: 'INVESTIGATION_FAILED',
+        message: 'Could not execute investigation for finding.'
+      }, 500);
+    }
     return apiResponse.success(res, result.investigation, 200);
   } catch (err) {
     return apiResponse.error(res, {
@@ -203,7 +234,6 @@ router.post('/:id/patches', async (req, res) => {
       }, 404);
     }
 
-    const aiService = require('../services/ai.service');
     const sourceContext = req.body?.sourceContext || req.body?.originalCode || finding.evidence || finding.codeSnippet || '';
 
     // Generate proposal via AI Service
@@ -270,7 +300,6 @@ router.post('/:id/generate-patch', async (req, res) => {
     }
 
     const { originalCode } = req.body || {};
-    const aiService = require('../services/ai.service');
     const patchResult = await aiService.generatePatch(finding, originalCode || finding.codeSnippet || finding.evidence);
 
     const diff = patchService.createUnifiedDiff({
@@ -359,7 +388,8 @@ router.post('/:id/apply-patch', async (req, res) => {
     const { approved, confirm, approverComments, patchedCode, workspacePath } = req.body || {};
 
     // Explicit Confirmation Gate (Commit 34 Invariant)
-    if (approved !== true && confirm !== true) {
+    const isApproved = approved === true || approved === 'true' || confirm === true || confirm === 'true';
+    if (!isApproved) {
       return apiResponse.error(res, {
         code: 'APPROVAL_REQUIRED',
         message: 'Patch application requires explicit user approval (approved: true).'
@@ -421,7 +451,7 @@ router.post('/:id/rollback', async (req, res) => {
       }, 404);
     }
 
-    const patch = patchService.getPatchByFindingId(findingId) || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
+    const patch = (typeof patchService.getPatchByFindingId === 'function' ? patchService.getPatchByFindingId(findingId) : null) || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
     if (patch) {
       const result = await patchService.rollbackPatch(patch.id);
       return apiResponse.success(res, result, 200);
