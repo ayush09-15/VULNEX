@@ -96,6 +96,22 @@ class VerificationService {
   }
 
   /**
+   * Save and index a verification record (intake / test helper)
+   * @param {Object} verificationRecord
+   * @returns {Object}
+   */
+  saveVerification(verificationRecord) {
+    if (!verificationRecord || !verificationRecord.id) {
+      throw new Error('Verification record must have an id');
+    }
+    verificationsStore.set(verificationRecord.id, verificationRecord);
+    if (verificationRecord.patchId) {
+      verificationsStore.set(verificationRecord.patchId, verificationRecord);
+    }
+    return verificationRecord;
+  }
+
+  /**
    * Execute post-patch scanner against disposable workspace (Commit 38)
    * Captures tool version, command, exit code, and raw output.
    *
