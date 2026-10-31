@@ -178,8 +178,16 @@ export const vulnexApi = {
       const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/findings`, { params });
       return res.data;
     },
-    getReport: async (scanId) => {
-      const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/report`);
+    getHistory: async () => {
+      const res = await axiosInstance.get('/scans/history');
+      return res.data;
+    },
+    getReport: async (scanId, params = {}) => {
+      const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/report`, { params });
+      return res.data;
+    },
+    exportReport: async (scanId, format = 'json') => {
+      const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/report`, { params: { format } });
       return res.data;
     },
   },
