@@ -1,4 +1,5 @@
 const { z } = require('zod');
+const { isPrivateOrBlockedHost } = require('../utils/ssrfGuard');
 
 /**
  * ============================================================================
@@ -79,12 +80,34 @@ const VulnerabilityCategoryEnum = z.enum([
   'OTHER'
 ]);
 
-// Path traversal guard: no absolute paths, no drive letters, no '..' segments
+// Path traversal guard: no absolute paths, no drive letters, no '..' segments, no null bytes, no encoded escapes
 const SafeRelativeFilePath = z.string()
   .min(1, 'File path cannot be empty')
+  .refine((p) => !p.includes('\0'), { message: 'File path cannot contain null bytes' })
   .refine(
     (p) => !p.startsWith('/') && !p.startsWith('\\') && !/^[A-Za-z]:[\\/]/.test(p),
     { message: 'File path must be relative to the scan workspace, not an absolute host path' }
+  )
+  .refine(
+    (p) => {
+      let decoded = p;
+      try {
+        while (decoded.includes('%')) {
+          const next = decodeURIComponent(decoded);
+          if (next === decoded) break;
+          decoded = next;
+        }
+      } catch {
+        return false;
+      }
+      if (decoded.includes('\0')) return false;
+      if (decoded.startsWith('/') || decoded.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(decoded)) {
+        return false;
+      }
+      const parts = decoded.split(/[/\\]/);
+      return !parts.includes('..') && !parts.some((s) => s === '..' || /^\.\.[/\\]/.test(s));
+    },
+    { message: 'File path cannot contain path traversal sequences ("..") or encoded escapes' }
   )
   .refine(
     (p) => !p.split(/[/\\]/).includes('..'),
@@ -99,13 +122,9 @@ const SafeHttpsRepoUrl = z.string()
     (u) => {
       try {
         const parsed = new URL(u);
+        if (parsed.username || parsed.password) return false;
         const host = parsed.hostname.toLowerCase();
-        // Block localhost, private IPs, loopback
-        if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '0.0.0.0') return false;
-        if (/^10\./.test(host)) return false;
-        if (/^192\.168\./.test(host)) return false;
-        if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)) return false;
-        if (/^169\.254\./.test(host)) return false; // AWS/cloud metadata IP
+        if (isPrivateOrBlockedHost(host)) return false;
         return true;
       } catch {
         return false;

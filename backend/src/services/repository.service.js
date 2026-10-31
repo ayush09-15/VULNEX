@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const { URL } = require('url');
+const { isPrivateOrBlockedHost } = require('../utils/ssrfGuard');
 const inventoryService = require('./inventory.service');
 const zipService = require('./zip.service');
 
@@ -85,25 +86,12 @@ function validateGitHubUrl(rawUrl) {
   // 4. Host verification & SSRF protection
   const hostname = parsedUrl.hostname.toLowerCase();
 
-  // Prohibit local / loopback / private IP ranges
-  const privateIpPatterns = [
-    /^localhost$/i,
-    /^127\./,
-    /^0\./,
-    /^::1$/,
-    /^10\./,
-    /^192\.168\./,
-    /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-    /^169\.254\./ // AWS / Cloud metadata address
-  ];
-
-  for (const pattern of privateIpPatterns) {
-    if (pattern.test(hostname)) {
-      const err = new Error('Prohibited IP or private host address detected. Access blocked by SSRF policy.');
-      err.code = 'INVALID_URL';
-      err.statusCode = 400;
-      throw err;
-    }
+  // Prohibit local / loopback / private IP ranges or metadata endpoints
+  if (isPrivateOrBlockedHost(hostname)) {
+    const err = new Error('Prohibited IP or private host address detected. Access blocked by SSRF policy.');
+    err.code = 'INVALID_URL';
+    err.statusCode = 400;
+    throw err;
   }
 
   // Strictly allow only verified GitHub host domains

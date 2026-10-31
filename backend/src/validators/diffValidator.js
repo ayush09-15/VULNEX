@@ -128,6 +128,32 @@ function validateWorkspacePath(relativeFilePath, workspacePath = '', options = {
     return { valid: false, code: 'SPECIAL_PATH_PREFIX', error: `Special path expansion prefix not permitted: "${raw}"` };
   }
 
+  // 3b. Check percent-encoded traversal & null bytes
+  let decoded = raw;
+  try {
+    while (decoded.includes('%')) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    }
+  } catch {
+    return { valid: false, code: 'PATH_TRAVERSAL', error: `Malformed percent-encoded path: "${raw}"` };
+  }
+
+  if (decoded.includes('\0')) {
+    return { valid: false, code: 'NULL_BYTE', error: `File path contains prohibited null byte: "${raw}"` };
+  }
+
+  if (decoded.startsWith('/') || decoded.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(decoded) || /^\\\\[^\\]+\\/.test(decoded)) {
+    return { valid: false, code: 'ABSOLUTE_PATH', error: `Absolute paths are not permitted: "${raw}"` };
+  }
+
+  const decodedNormalized = normalizeDiffFilePath(decoded);
+  const decodedSegments = decodedNormalized.split('/');
+  if (decodedSegments.includes('..') || decodedSegments.some((s) => s === '..' || /^\.\.[/\\]/.test(s))) {
+    return { valid: false, code: 'PATH_TRAVERSAL', error: `Path traversal ("..") is not permitted: "${raw}"` };
+  }
+
   const normalized = normalizeDiffFilePath(raw);
 
   // 4. Reject directory traversal sequences

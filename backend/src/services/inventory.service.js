@@ -436,12 +436,28 @@ function getFileExcerpt(workspacePath, relativeFilePath, startLine, endLine, opt
   const fullPath = path.resolve(resolvedRoot, relativeFilePath);
 
   // Containment assertion
-  if (!fullPath.startsWith(resolvedRoot)) {
+  const rootPrefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : resolvedRoot + path.sep;
+  if (!fullPath.startsWith(rootPrefix) && fullPath !== resolvedRoot) {
     throw new Error('Access denied: Target path traverses outside the workspace directory.');
   }
 
   if (!fs.existsSync(fullPath)) {
     throw new Error(`Source file does not exist: ${relativeFilePath}`);
+  }
+
+  // Symlink escape verification: Ensure resolved canonical target stays inside canonical workspace root
+  let realRoot;
+  let realTarget;
+  try {
+    realRoot = fs.realpathSync(resolvedRoot);
+    realTarget = fs.realpathSync(fullPath);
+  } catch {
+    throw new Error('Access denied: Failed to resolve canonical path.');
+  }
+
+  const realPrefix = realRoot.endsWith(path.sep) ? realRoot : realRoot + path.sep;
+  if (!realTarget.startsWith(realPrefix) && realTarget !== realRoot) {
+    throw new Error('Access denied: Target path escapes workspace via symbolic link.');
   }
 
   const contextLines = typeof options.contextLines === 'number' ? Math.max(0, options.contextLines) : 5;

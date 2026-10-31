@@ -103,10 +103,50 @@ function validateZipArchive(zipInput, options = {}) {
       throw err;
     }
 
-    // 3. ZIP Slip Directory Traversal Guard (no ".." segments)
+    // 2b. Check decoded path for traversal or escapes
+    let decodedName = rawName;
+    try {
+      while (decodedName.includes('%')) {
+        const next = decodeURIComponent(decodedName);
+        if (next === decodedName) break;
+        decodedName = next;
+      }
+    } catch {
+      const err = new Error(`Archive entry contains malformed percent encoding: "${rawName}".`);
+      err.code = 'UNSUPPORTED_ARCHIVE';
+      throw err;
+    }
+
+    if (decodedName.includes('\0')) {
+      const err = new Error('Archive entry contains illegal null byte.');
+      err.code = 'UNSUPPORTED_ARCHIVE';
+      throw err;
+    }
+
+    if (path.isAbsolute(decodedName) || /^[A-Za-z]:[\\/]/.test(decodedName) || decodedName.startsWith('/') || decodedName.startsWith('\\')) {
+      const err = new Error(`Archive contains illegal absolute path entry: "${rawName}".`);
+      err.code = 'UNSUPPORTED_ARCHIVE';
+      throw err;
+    }
+
+    const decodedParts = decodedName.split(/[/\\]/);
+    if (decodedParts.includes('..') || decodedParts.some((p) => p === '..' || /^\.\.[/\\]/.test(p))) {
+      const err = new Error(`Archive entry "${rawName}" contains directory traversal sequence (".."). Access blocked.`);
+      err.code = 'UNSUPPORTED_ARCHIVE';
+      throw err;
+    }
+
+    // 3. ZIP Slip Directory Traversal Guard (no ".." segments or boundary escapes)
     const normalizedParts = rawName.split(/[/\\]/);
     if (normalizedParts.includes('..')) {
       const err = new Error(`Archive entry "${rawName}" contains directory traversal sequence (".."). Access blocked.`);
+      err.code = 'UNSUPPORTED_ARCHIVE';
+      throw err;
+    }
+
+    const normalizedPath = path.normalize(rawName);
+    if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
+      const err = new Error(`Archive entry "${rawName}" escapes extraction boundary.`);
       err.code = 'UNSUPPORTED_ARCHIVE';
       throw err;
     }
@@ -161,6 +201,8 @@ function extractZipArchive(zipInput, destinationDir, options = {}) {
 
   const resolvedDest = path.resolve(destinationDir);
   fs.mkdirSync(resolvedDest, { recursive: true });
+  const realDest = fs.realpathSync(resolvedDest);
+  const realDestPrefix = realDest.endsWith(path.sep) ? realDest : realDest + path.sep;
 
   const zip = Buffer.isBuffer(zipInput) ? new AdmZip(zipInput) : new AdmZip(zipInput);
   const entries = zip.getEntries();
@@ -180,9 +222,31 @@ function extractZipArchive(zipInput, destinationDir, options = {}) {
 
     if (entry.isDirectory) {
       fs.mkdirSync(targetPath, { recursive: true });
+      const realTargetDir = fs.realpathSync(targetPath);
+      if (!realTargetDir.startsWith(realDestPrefix) && realTargetDir !== realDest) {
+        const err = new Error(`Path containment violation for directory: "${entryName}" via symlink.`);
+        err.code = 'UNSUPPORTED_ARCHIVE';
+        throw err;
+      }
     } else {
       const parentDir = path.dirname(targetPath);
       fs.mkdirSync(parentDir, { recursive: true });
+
+      const realParent = fs.realpathSync(parentDir);
+      if (!realParent.startsWith(realDestPrefix) && realParent !== realDest) {
+        const err = new Error(`Path containment violation for entry: "${entryName}" via symlink.`);
+        err.code = 'UNSUPPORTED_ARCHIVE';
+        throw err;
+      }
+
+      if (fs.existsSync(targetPath)) {
+        const realTarget = fs.realpathSync(targetPath);
+        if (!realTarget.startsWith(realDestPrefix) && realTarget !== realDest) {
+          const err = new Error(`Path containment violation for entry: "${entryName}" via pre-existing symlink.`);
+          err.code = 'UNSUPPORTED_ARCHIVE';
+          throw err;
+        }
+      }
 
       const content = entry.getData();
       fs.writeFileSync(targetPath, content);
