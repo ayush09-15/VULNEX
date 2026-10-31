@@ -15,13 +15,16 @@ test('Verification Checklist Contract & Scoped Status (Commit 40)', async (t) =>
     assert.equal(normalizeCheckStatus('ERROR'), 'FAILED');
     assert.equal(normalizeCheckStatus('inconclusive'), 'INCONCLUSIVE');
     assert.equal(normalizeCheckStatus('AMBIGUOUS'), 'INCONCLUSIVE');
+    assert.equal(normalizeCheckStatus('SCANNER_UNAVAILABLE'), 'INCONCLUSIVE');
+    assert.equal(normalizeCheckStatus('partial'), 'PARTIAL');
+    assert.equal(normalizeCheckStatus('PARTIALLY_VERIFIED'), 'PARTIAL');
     assert.equal(normalizeCheckStatus('NOT_RUN'), 'NOT_RUN');
     assert.equal(normalizeCheckStatus(null), 'NOT_RUN');
     assert.equal(normalizeCheckStatus(undefined), 'NOT_RUN');
   });
 
-  await t.test('VERIFICATION_STATUS_CONFIG defines all four canonical gate states', () => {
-    const states = ['PASSED', 'FAILED', 'INCONCLUSIVE', 'NOT_RUN'];
+  await t.test('VERIFICATION_STATUS_CONFIG defines all canonical gate states', () => {
+    const states = ['PASSED', 'FAILED', 'INCONCLUSIVE', 'PARTIAL', 'NOT_RUN'];
     for (const state of states) {
       assert.ok(VERIFICATION_STATUS_CONFIG[state], `Missing config for ${state}`);
       assert.ok(VERIFICATION_STATUS_CONFIG[state].label);
@@ -107,6 +110,23 @@ test('Verification Checklist Contract & Scoped Status (Commit 40)', async (t) =>
     const checklist = buildVerificationChecklist(verification, patch);
     const regressionCheck = checklist.find((c) => c.id === 'defect_regression');
     assert.equal(regressionCheck.status, 'FAILED');
+  });
+
+  await t.test('buildVerificationChecklist reflects INCONCLUSIVE on scanner unavailable state', () => {
+    const patch = { status: 'APPLIED_TO_TEMP' };
+    const verification = {
+      status: 'INCONCLUSIVE',
+      testResults: { testsPassed: true, syntaxValid: true },
+      scannerResults: { scannerUnavailable: true, originalFindingResolved: false, status: 'SCANNER_UNAVAILABLE' },
+      beforeAfterComparison: { comparisonOutcome: 'SCANNER_UNAVAILABLE', ambiguousMatch: true },
+    };
+
+    const checklist = buildVerificationChecklist(verification, patch);
+    const rescanCheck = checklist.find((c) => c.id === 'post_patch_scan');
+    const regressionCheck = checklist.find((c) => c.id === 'defect_regression');
+
+    assert.equal(rescanCheck.status, 'INCONCLUSIVE');
+    assert.equal(regressionCheck.status, 'INCONCLUSIVE');
   });
 
   await t.test('getScopedStatusWording provides truthful scoped wording per Bible Section 9.3', () => {

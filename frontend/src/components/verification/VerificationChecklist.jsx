@@ -44,6 +44,13 @@ export function StatusBadge({ status }) {
           INCONCLUSIVE
         </span>
       );
+    case 'PARTIAL':
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-mono font-bold uppercase bg-amber-950/80 text-amber-300 border border-amber-700/60 shadow-sm">
+          <HelpCircle className="w-3.5 h-3.5 text-amber-400" />
+          PARTIAL
+        </span>
+      );
     case 'NOT_RUN':
     default:
       return (

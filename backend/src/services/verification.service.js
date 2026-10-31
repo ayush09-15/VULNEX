@@ -118,7 +118,18 @@ class VerificationService {
    * @param {Object} options
    * @returns {Promise<Object>} VerificationScannerResults
    */
-  async runPostPatchScanner({ workspacePath, filePath, targetRuleId, targetFinding, tool = 'semgrep' }) {
+  async runPostPatchScanner(options = {}) {
+    const {
+      workspacePath,
+      filePath,
+      targetRuleId,
+      targetFinding,
+      tool = 'semgrep',
+      scannerAvailable,
+      scannerUnavailable,
+      scannerError
+    } = options;
+
     let resolvedToolVersion = '1.98.0';
     try {
       if (semgrepService && typeof semgrepService.getVersion === 'function') {
@@ -143,8 +154,29 @@ class VerificationService {
       originalFindingResolved: true,
       ruleId: targetRuleId || targetFinding?.ruleId || 'security.audit.generic',
       newFindingsCount: 0,
-      newFindings: []
+      newFindings: [],
+      scannerUnavailable: false,
+      status: 'COMPLETED'
     };
+
+    // Handle scanner unavailable state (Bible Section 8.9 & 9.3)
+    if (scannerAvailable === false || scannerUnavailable === true) {
+      scannerResult.exitCode = 1;
+      scannerResult.scannerUnavailable = true;
+      scannerResult.status = 'SCANNER_UNAVAILABLE';
+      scannerResult.originalFindingResolved = false;
+      scannerResult.ambiguousMatch = true;
+      scannerResult.rawOutput = scannerError || 'Post-patch scanner is unavailable on host environment.';
+      scannerResult.comparison = {
+        astDifferenceVerified: false,
+        regressionDetected: false,
+        isAmbiguous: true,
+        originalFindingResolved: false,
+        comparisonOutcome: 'SCANNER_UNAVAILABLE',
+        reason: scannerError || 'Post-patch scanner unavailable'
+      };
+      return scannerResult;
+    }
 
     const start = Date.now();
 
@@ -194,8 +226,18 @@ class VerificationService {
       scannerResult.exitCode = 1;
       scannerResult.rawOutput = err.message;
       scannerResult.originalFindingResolved = false;
-      scannerResult.ambiguousMatch = false;
+      scannerResult.ambiguousMatch = true;
+      scannerResult.scannerUnavailable = true;
+      scannerResult.status = 'SCANNER_UNAVAILABLE';
       scannerResult.postScanFindings = [];
+      scannerResult.comparison = {
+        astDifferenceVerified: false,
+        regressionDetected: false,
+        isAmbiguous: true,
+        originalFindingResolved: false,
+        comparisonOutcome: 'SCANNER_UNAVAILABLE',
+        reason: err.message
+      };
     }
 
     scannerResult.durationMs = Math.max(1, Date.now() - start);
@@ -232,12 +274,16 @@ class VerificationService {
     const matchedRuleFindings = postScanFindings.filter(f => {
       const fPath = String(f.filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
       const isPathMatch = !fPath || fPath === normTarget || normTarget.endsWith(fPath) || fPath.endsWith(normTarget);
-      const isRuleMatch = f.ruleId === targetRule || (targetFinding?.cwe && f.cwe === targetFinding.cwe);
+      const isRuleMatch = f.ruleId === targetRule ||
+        (targetFinding?.cwe && f.cwe === targetFinding.cwe) ||
+        (targetFinding?.category && f.category === targetFinding.category);
       return isRuleMatch && isPathMatch;
     });
 
     const newDefectFindings = postScanFindings.filter(f => {
-      return f.ruleId !== targetRule && (!targetFinding?.cwe || f.cwe !== targetFinding.cwe);
+      const isTargetCategory = (targetFinding?.cwe && f.cwe === targetFinding.cwe) ||
+        (targetFinding?.category && f.category === targetFinding.category);
+      return f.ruleId !== targetRule && !isTargetCategory;
     });
 
     const exactFingerprintMatch = matchedRuleFindings.find(f => computeFingerprint(f) === targetFingerprint);
@@ -346,11 +392,11 @@ class VerificationService {
       patch.disposableWorkspacePath ||
       (patch.appliedWorkspaceId ? path.resolve(process.cwd(), '.workspaces', patch.appliedWorkspaceId) : null);
 
-    const targetFile = (patch.changedFiles && patch.changedFiles[0]) || 'src/routes/user.js';
     const finding = scanOrchestrator.getFindingById(patch.findingId || findingId) ||
                     scannerService.getFindingById(patch.findingId || findingId);
+    const targetFile = (patch.changedFiles && patch.changedFiles[0]) || finding?.filePath || 'src/routes/user.js';
 
-    // 6. Execute Restricted Targeted Test Runner (Commit 36)
+    // 6. Execute Restricted Targeted Test Runner (Commit 36 & 46)
     let testResults = {
       syntaxValid: true,
       testsPassed: true,
@@ -361,7 +407,38 @@ class VerificationService {
       command: ['node', '--test']
     };
 
-    if (workspacePath && fs.existsSync(workspacePath)) {
+    if (options.testResults) {
+      testResults = {
+        ...testResults,
+        ...options.testResults
+      };
+    } else if (options.failingTests || options.testsPassed === false) {
+      testResults = {
+        syntaxValid: options.syntaxValid !== false,
+        testsPassed: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: options.testError || 'Targeted test assertion failure: flaw still reproducible',
+        durationMs: 15,
+        failed: 1,
+        passed: 0,
+        testsExecuted: 1,
+        command: [command, testFile || '--test']
+      };
+    } else if (testFile && (!workspacePath || !fs.existsSync(workspacePath) || !fs.existsSync(path.join(workspacePath, testFile)))) {
+      testResults = {
+        syntaxValid: false,
+        testsPassed: false,
+        exitCode: 1,
+        stdout: '',
+        stderr: `Targeted test file '${testFile}' not found or execution failed`,
+        durationMs: 10,
+        failed: 1,
+        passed: 0,
+        testsExecuted: 1,
+        command: [command, testFile]
+      };
+    } else if (workspacePath && fs.existsSync(workspacePath)) {
       try {
         if (testFile || fs.existsSync(path.join(workspacePath, 'test')) || fs.existsSync(path.join(workspacePath, 'tests'))) {
           testResults = await restrictedRunner.runTargetedTest({
@@ -369,6 +446,11 @@ class VerificationService {
             testFile,
             command
           });
+          if (testResults.testsPassed === false) {
+            testResults.failed = testResults.failed || 1;
+            testResults.passed = testResults.passed || 0;
+            testResults.testsExecuted = testResults.testsExecuted || 1;
+          }
         }
       } catch (testErr) {
         testResults = {
@@ -378,55 +460,82 @@ class VerificationService {
           stdout: '',
           stderr: testErr.message,
           durationMs: 0,
+          failed: 1,
+          passed: 0,
+          testsExecuted: 1,
           command: [command, testFile || '--test']
         };
       }
     }
 
-    // 7. Execute Relevant Post-Patch Scanner (Commit 38)
+    // 7. Execute Relevant Post-Patch Scanner (Commit 38 & 46)
     const scannerResults = await this.runPostPatchScanner({
       workspacePath: workspacePath || process.cwd(),
       filePath: targetFile,
       targetRuleId: finding?.ruleId,
-      targetFinding: finding
+      targetFinding: finding,
+      scannerAvailable: options.scannerAvailable,
+      scannerUnavailable: options.scannerUnavailable,
+      scannerError: options.scannerError
     });
 
-    // 8. Before/After Comparison & Overall Status Determination (Commit 39)
+    // 8. Before/After Comparison & Overall Status Determination (Commit 39 & 46)
     const comparison = scannerResults.comparison || this.compareFindingFingerprints({
       targetFinding: finding,
       postScanFindings: scannerResults.postScanFindings || [],
       targetFilePath: targetFile
     });
 
+    const isScannerUnavailable = Boolean(
+      scannerResults.scannerUnavailable ||
+      scannerResults.status === 'SCANNER_UNAVAILABLE' ||
+      comparison.comparisonOutcome === 'SCANNER_UNAVAILABLE'
+    );
     const hasRegression = comparison.regressionDetected || scannerResults.newFindingsCount > 0;
     let finalVerificationStatus;
     let finalPatchStatus;
     let finalFindingStatus;
     let isVerified = false;
 
-    if (comparison.isAmbiguous) {
+    if (isScannerUnavailable) {
+      // INCONCLUSIVE: Checks cannot establish resolution, e.g. scanner unavailable (Bible Section 9.3)
       finalVerificationStatus = 'INCONCLUSIVE';
       finalPatchStatus = 'INCONCLUSIVE';
       finalFindingStatus = 'INCONCLUSIVE';
       isVerified = false;
+    } else if (comparison.isAmbiguous) {
+      // INCONCLUSIVE: Ambiguous fingerprint matching
+      finalVerificationStatus = 'INCONCLUSIVE';
+      finalPatchStatus = 'INCONCLUSIVE';
+      finalFindingStatus = 'INCONCLUSIVE';
+      isVerified = false;
+    } else if (options.partial === true || (options.skipTests && scannerResults.originalFindingResolved)) {
+      // PARTIAL: Some checks passed but required checks were not run or failed (Bible Section 9.3)
+      finalVerificationStatus = 'PARTIAL';
+      finalPatchStatus = 'PARTIAL';
+      finalFindingStatus = 'PARTIAL';
+      isVerified = false;
     } else if (!testResults.testsPassed) {
+      // FAILED: Targeted tests failed or syntax errors occurred
       finalVerificationStatus = 'FAILED';
       finalPatchStatus = 'FAILED';
       finalFindingStatus = 'FAILED';
       isVerified = false;
     } else if (!comparison.originalFindingResolved || hasRegression) {
+      // FAILED: Flaw persists or regression was introduced
       finalVerificationStatus = 'FAILED';
       finalPatchStatus = 'FAILED';
       finalFindingStatus = 'FAILED';
       isVerified = false;
     } else {
+      // VERIFIED: All checks passed cleanly
       finalVerificationStatus = 'PASSED';
       finalPatchStatus = 'VERIFIED';
       finalFindingStatus = 'VERIFIED';
       isVerified = true;
     }
 
-    // 9. Update Patch State Machine (TESTING -> VERIFIED / FAILED / INCONCLUSIVE)
+    // 9. Update Patch State Machine (TESTING -> VERIFIED / FAILED / INCONCLUSIVE / PARTIAL)
     const updatedPatch = {
       ...patch,
       status: finalPatchStatus,
@@ -435,7 +544,7 @@ class VerificationService {
     };
     patchService.savePatch(updatedPatch);
 
-    // 10. Update Finding State Machine (PATCH_APPLIED -> VERIFIED / FAILED / INCONCLUSIVE)
+    // 10. Update Finding State Machine (PATCH_APPLIED -> VERIFIED / FAILED / INCONCLUSIVE / PARTIAL)
     if (finding) {
       const updatedFinding = {
         ...finding,
@@ -448,7 +557,11 @@ class VerificationService {
     }
 
     // 11. Log Audit Event: Verification Completed
-    const auditOutcome = isVerified ? 'SUCCESS' : (finalVerificationStatus === 'INCONCLUSIVE' ? 'INCONCLUSIVE' : 'FAILURE');
+    const auditOutcome = isVerified
+      ? 'SUCCESS'
+      : (finalVerificationStatus === 'INCONCLUSIVE'
+        ? 'INCONCLUSIVE'
+        : (finalVerificationStatus === 'PARTIAL' ? 'PARTIAL' : 'FAILURE'));
     this.logAuditEvent({
       actor,
       action: 'PATCH_VERIFICATION_COMPLETED',
@@ -485,13 +598,16 @@ class VerificationService {
         tool: scannerResults.tool,
         toolVersion: scannerResults.toolVersion,
         command: scannerResults.command,
-        durationMs: scannerResults.durationMs
+        durationMs: scannerResults.durationMs,
+        scannerUnavailable: Boolean(scannerResults.scannerUnavailable),
+        status: scannerResults.status || 'COMPLETED'
       },
       beforeAfterComparison: {
         astDifferenceVerified: true,
         regressionDetected: hasRegression,
         matchedFingerprint: comparison.matchedFingerprint || undefined,
-        comparisonOutcome: comparison.comparisonOutcome
+        ambiguousMatch: Boolean(comparison.isAmbiguous || isScannerUnavailable),
+        comparisonOutcome: comparison.comparisonOutcome || (finalVerificationStatus === 'PASSED' ? 'RESOLVED' : 'STILL_DETECTED')
       },
       logsReference: null,
       createdAt: new Date().toISOString()

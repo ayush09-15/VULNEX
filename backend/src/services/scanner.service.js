@@ -108,6 +108,7 @@ class ScannerService {
               ruleId: rule.id,
               title: rule.name,
               category: rule.category,
+              cwe: rule.cwe,
               severity: rule.severity,
               confidence: 'MEDIUM',
               filePath,

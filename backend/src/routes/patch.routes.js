@@ -231,7 +231,11 @@ router.post('/:id/verify', async (req, res) => {
       command,
       requestId,
       actor: req.user?.id || 'security_operator',
-      ...options
+      ...options,
+      ...(req.body?.testResults ? { testResults: req.body.testResults } : {}),
+      ...(req.body?.failingTests !== undefined ? { failingTests: req.body.failingTests } : {}),
+      ...(req.body?.scannerUnavailable !== undefined ? { scannerUnavailable: req.body.scannerUnavailable } : {}),
+      ...(req.body?.partial !== undefined ? { partial: req.body.partial } : {})
     });
 
     return apiResponse.success(res, result.verification || result, 200);

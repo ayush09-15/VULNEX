@@ -42,7 +42,8 @@ const FindingStatusEnum = z.enum([
   'VERIFIED',
   'REJECTED',
   'FAILED',
-  'INCONCLUSIVE'
+  'INCONCLUSIVE',
+  'PARTIAL'
 ]);
 
 const PatchStatusEnum = z.enum([
@@ -53,7 +54,8 @@ const PatchStatusEnum = z.enum([
   'VERIFIED',
   'FAILED',
   'REJECTED',
-  'INCONCLUSIVE'
+  'INCONCLUSIVE',
+  'PARTIAL'
 ]);
 
 const VerificationStatusEnum = z.enum([
@@ -313,8 +315,17 @@ const VerificationScannerResultsSchema = z.object({
 const VerificationComparisonSchema = z.object({
   astDifferenceVerified: z.boolean().default(false),
   regressionDetected: z.boolean().default(false),
-  matchedFingerprint: z.string().optional(),
-  comparisonOutcome: z.enum(['RESOLVED', 'STILL_DETECTED', 'AMBIGUOUS', 'INTRODUCED_NEW_DEFECT', 'REGRESSION_DETECTED']).default('RESOLVED')
+  matchedFingerprint: z.string().optional().nullable(),
+  ambiguousMatch: z.boolean().optional(),
+  comparisonOutcome: z.enum([
+    'RESOLVED',
+    'STILL_DETECTED',
+    'AMBIGUOUS',
+    'INTRODUCED_NEW_DEFECT',
+    'REGRESSION_DETECTED',
+    'SCANNER_UNAVAILABLE',
+    'INCONCLUSIVE'
+  ]).default('RESOLVED')
 });
 
 const VerificationSchema = z.object({
@@ -338,7 +349,7 @@ const AuditEventSchema = z.object({
   action: z.string().min(1, 'Action is required'),
   entityId: z.string().min(1, 'entityId is required'),
   timestamp: z.string().datetime({ message: 'Must be ISO-8601 UTC timestamp' }),
-  outcome: z.enum(['SUCCESS', 'FAILURE', 'DENIED']),
+  outcome: z.enum(['SUCCESS', 'FAILURE', 'DENIED', 'INCONCLUSIVE', 'PARTIAL']),
   requestId: z.string().min(1, 'requestId is required')
 });
 
