@@ -1,0 +1,49 @@
+{
+  "version": "1.136.0",
+  "results": [
+    {
+      "check_id": "javascript.express.security.audit.sqli",
+      "path": "fixtures/server.js",
+      "start": { "line": 46, "col": 17, "offset": 1540 },
+      "end": { "line": 46, "col": 88, "offset": 1611 },
+      "extra": {
+        "message": "User-controlled data is formatted into an SQL query string.",
+        "metadata": {
+          "cwe": ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command"],
+          "confidence": "HIGH",
+          "category": "security",
+          "references": [
+            "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+          ]
+        },
+        "severity": "ERROR",
+        "lines": "const query = `SELECT id, username, email FROM users WHERE username = '${username}'`;"
+      }
+    },
+    {
+      "check_id": "javascript.express.security.injection.raw-html-format.raw-html-format",
+      "path": "fixtures/server.js",
+      "start": { "line": 79, "col": 1, "offset": 2723 },
+      "end": { "line": 80, "col": 1, "offset": 2770 },
+      "extra": {
+        "message": "User data flows into the host portion of this manually-constructed HTML. This can introduce a Cross-Site-Scripting (XSS) vulnerability.",
+        "metadata": {
+          "cwe": ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"],
+          "confidence": "MEDIUM",
+          "category": "security",
+          "references": [
+            "https://cheatsheetseries.owasp.org/cheatsheets/Cross_Site_Scripting_Prevention_Cheat_Sheet.html",
+            "https://owasp.org/www-community/attacks/xss/"
+          ]
+        },
+        "severity": "WARNING",
+        "lines": "res.status(200).send(htmlResponse);"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": ["fixtures/server.js"]
+  }
+}
+

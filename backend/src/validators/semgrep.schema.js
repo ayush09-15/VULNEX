@@ -42,9 +42,9 @@ const SemgrepPositionSchema = z.object({
 
 const SemgrepExtraSchema = z.object({
   message: z.string().default(''),
-  metadata: z.record(z.any()).optional().default({}),
+  metadata: z.record(z.any()).nullable().optional().default(null),
   severity: z.string().optional().default('INFO'),
-  lines: z.string().optional().default(''),
+  lines: z.string().nullable().optional().default(null),
   fingerprint: z.string().optional()
 }).passthrough();
 
@@ -80,12 +80,17 @@ const NormalizedFindingSchema = z.object({
   filePath: SafeRelativeFilePath,
   startLine: z.number().int().min(1),
   endLine: z.number().int().min(1),
+  startCol: z.number().int().nullable().optional(),
+  endCol: z.number().int().nullable().optional(),
+  codeSnippet: z.string().nullable().optional(),
+  metadata: z.record(z.any()).nullable().optional(),
+  references: z.array(z.string()).optional().default([]),
   message: z.string().default(''),
   evidence: z.union([z.string(), z.record(z.any())]).default(''),
   fingerprint: z.string().min(1, 'Stable fingerprint required'),
   status: FindingStatusEnum.default('DETECTED'),
   createdAt: z.string().datetime({ message: 'Must be ISO-8601 UTC timestamp' })
-}).refine(
+}).passthrough().refine(
   (data) => data.endLine >= data.startLine,
   { message: 'endLine must be greater than or equal to startLine', path: ['endLine'] }
 );

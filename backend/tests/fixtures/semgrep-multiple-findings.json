@@ -1,0 +1,63 @@
+{
+  "version": "1.136.0",
+  "results": [
+    {
+      "check_id": "javascript.express.security.audit.sqli",
+      "path": "src/controllers/user.controller.js",
+      "start": { "line": 42, "col": 5, "offset": 1200 },
+      "end": { "line": 42, "col": 85, "offset": 1280 },
+      "extra": {
+        "message": "Detected direct string interpolation in SQL query. Use parameterized queries instead.",
+        "metadata": {
+          "cwe": ["CWE-89: Improper Neutralization of Special Elements used in an SQL Command ('SQL Injection')"],
+          "confidence": "HIGH",
+          "references": [
+            "https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html"
+          ]
+        },
+        "severity": "ERROR",
+        "lines": "const query = `SELECT * FROM users WHERE username = '${req.query.username}'`;"
+      }
+    },
+    {
+      "check_id": "javascript.express.security.injection.raw-html-format",
+      "path": "src/controllers/search.controller.js",
+      "start": { "line": 65, "col": 3, "offset": 1850 },
+      "end": { "line": 68, "col": 10, "offset": 1950 },
+      "extra": {
+        "message": "Untrusted input embedded directly in HTML response.",
+        "metadata": {
+          "cwe": ["CWE-79: Improper Neutralization of Input During Web Page Generation ('Cross-site Scripting')"],
+          "confidence": "MEDIUM",
+          "references": [
+            "https://owasp.org/www-community/attacks/xss/"
+          ]
+        },
+        "severity": "WARNING",
+        "lines": "res.send(`<h1>Search Results for ${req.query.q}</h1>`);"
+      }
+    },
+    {
+      "check_id": "generic.secrets.security.hardcoded-jwt-secret",
+      "path": "src/config/jwt.js",
+      "start": { "line": 10, "col": 1, "offset": 250 },
+      "end": { "line": 10, "col": 60, "offset": 310 },
+      "extra": {
+        "message": "Hardcoded JWT secret token detected in source code.",
+        "metadata": {
+          "cwe": ["CWE-798: Use of Hard-coded Credentials"],
+          "confidence": "MEDIUM",
+          "references": []
+        },
+        "severity": "WARNING",
+        "lines": "const JWT_SECRET = \"super_secret_production_key_123456789\";"
+      }
+    }
+  ],
+  "errors": [],
+  "paths": {
+    "scanned": ["src/controllers/user.controller.js", "src/controllers/search.controller.js", "src/config/jwt.js"],
+    "skipped": []
+  }
+}
+

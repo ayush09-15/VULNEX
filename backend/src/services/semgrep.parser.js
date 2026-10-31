@@ -63,7 +63,6 @@ class SemgrepParser {
       case 'CRITICAL':
         return 'CRITICAL';
       case 'ERROR':
-        // Check if rule metadata indicates critical severity
         if (String(metadata.impact || '').toUpperCase() === 'CRITICAL') return 'CRITICAL';
         return 'HIGH';
       case 'WARNING':
@@ -139,10 +138,6 @@ class SemgrepParser {
    * @returns {string}
    */
   deriveTitle(checkId, metadata = {}) {
-    if (metadata.shortlink) {
-      // Use clean title if metadata has it
-    }
-    // Convert dot-separated checkId to title (e.g. javascript.express.security.audit.sqli)
     const parts = checkId.split('.');
     const ruleBase = parts[parts.length - 1] || checkId;
     const formatted = ruleBase.replace(/[-_]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -150,7 +145,7 @@ class SemgrepParser {
   }
 
   /**
-   * Generate a stable, deterministic SHA-256 fingerprint for deduplication
+   * Generate a stable, deterministic SHA-256 fingerprint for cross-scan identification
    * @param {string} ruleId
    * @param {string} filePath
    * @param {string} evidence
@@ -171,9 +166,7 @@ class SemgrepParser {
    */
   sanitizeEvidence(rawEvidence = '') {
     if (typeof rawEvidence !== 'string') return '';
-    // Redact hardcoded strings that look like secrets/keys
     let sanitized = rawEvidence.replace(/(['"`])([A-Za-z0-9_\-\.]{16,})(['"`])/g, '$1[REDACTED_SECRET]$3');
-    // Truncate to reasonable length (max 1000 characters) to prevent memory bloat
     if (sanitized.length > 1000) {
       sanitized = sanitized.slice(0, 1000) + '... [TRUNCATED]';
     }
@@ -181,12 +174,13 @@ class SemgrepParser {
   }
 
   /**
-   * Parse and normalize raw Semgrep JSON output
-   * @param {string|Object} rawOutput Raw string or pre-parsed object
-   * @param {Object} options
-   * @param {string} [options.workspacePath] Root workspace path to make file paths relative
+   * Parse Semgrep JSON output into structured VULNEX scanner findings and metadata
+   *
+   * @param {string|Object} rawOutput Raw Semgrep stdout string or parsed JSON object
+   * @param {Object} [options]
+   * @param {string} [options.workspacePath] Root workspace path to normalize file paths
    * @param {string} [options.scanId] Associated scan ID
-   * @returns {{findings: Array, errors: Array, metadata: Object}}
+   * @returns {{success: boolean, isValidJson: boolean, findings: Array, errors: Array, metadata: Object|null}}
    */
   parse(rawOutput, options = {}) {
     const errors = [];
@@ -194,8 +188,14 @@ class SemgrepParser {
     const workspacePath = options.workspacePath || '';
     const nowIso = new Date().toISOString();
 
-    if (!rawOutput) {
-      return { findings: [], errors: ['Semgrep output is empty'], metadata: {} };
+    if (rawOutput === null || rawOutput === undefined || rawOutput === '') {
+      return {
+        success: false,
+        isValidJson: false,
+        findings: [],
+        errors: ['Semgrep output is empty or null'],
+        metadata: null
+      };
     }
 
     let parsedJson;
@@ -204,26 +204,35 @@ class SemgrepParser {
         parsedJson = JSON.parse(rawOutput);
       } catch (err) {
         return {
+          success: false,
+          isValidJson: false,
           findings: [],
           errors: [`Failed to parse Semgrep JSON output: ${err.message}`],
-          metadata: {}
+          metadata: null
         };
       }
-    } else {
+    } else if (typeof rawOutput === 'object') {
       parsedJson = rawOutput;
+    } else {
+      return {
+        success: false,
+        isValidJson: false,
+        findings: [],
+        errors: ['Invalid Semgrep output type (expected JSON string or object)'],
+        metadata: null
+      };
     }
 
-    // Validate raw structure with Zod schema
+    // Valid JSON confirmed
     const rawValidation = validateRawSemgrepOutput(parsedJson);
     if (!rawValidation.success) {
-      // Record validation warning but attempt to extract results if array exists
       errors.push(`Raw Semgrep output schema validation warning: ${rawValidation.error.message}`);
     }
 
     const rawData = rawValidation.success ? rawValidation.data : parsedJson;
     const rawResults = Array.isArray(rawData?.results) ? rawData.results : [];
 
-    // Capture Semgrep errors from the output if any
+    // Capture any Semgrep runtime errors/warnings from output
     if (Array.isArray(rawData?.errors) && rawData.errors.length > 0) {
       rawData.errors.forEach(err => {
         const errMsg = typeof err === 'string' ? err : err.message || JSON.stringify(err);
@@ -239,16 +248,24 @@ class SemgrepParser {
 
         const startLine = item.start?.line && item.start.line >= 1 ? item.start.line : 1;
         const endLine = item.end?.line && item.end.line >= startLine ? item.end.line : startLine;
+        const startCol = item.start?.col !== undefined ? item.start.col : null;
+        const endCol = item.end?.col !== undefined ? item.end.col : null;
 
         const extra = item.extra || {};
-        const metadata = extra.metadata || {};
+        const metadata = (extra.metadata && typeof extra.metadata === 'object' && Object.keys(extra.metadata).length > 0)
+          ? extra.metadata
+          : null;
+        const references = (metadata && Array.isArray(metadata.references))
+          ? metadata.references
+          : [];
 
-        const severity = this.mapSeverity(extra.severity, metadata);
-        const confidence = this.mapConfidence(metadata);
-        const category = this.deriveCategory(checkId, metadata);
-        const title = this.deriveTitle(checkId, metadata);
+        const severity = this.mapSeverity(extra.severity, metadata || {});
+        const confidence = this.mapConfidence(metadata || {});
+        const category = this.deriveCategory(checkId, metadata || {});
+        const title = this.deriveTitle(checkId, metadata || {});
         const message = (extra.message || '').trim() || `Security finding detected by rule ${checkId}`;
-        const evidence = this.sanitizeEvidence(extra.lines || '');
+        const codeSnippet = extra.lines ? String(extra.lines) : null;
+        const evidence = codeSnippet ? this.sanitizeEvidence(codeSnippet) : '';
 
         const fingerprint = extra.fingerprint && /^[a-f0-9]{32,64}$/i.test(extra.fingerprint)
           ? extra.fingerprint
@@ -256,18 +273,26 @@ class SemgrepParser {
 
         const findingId = `find_${crypto.randomBytes(8).toString('hex')}`;
 
-        const normalizedFinding = {
-          id: findingId,
-          scanner: 'semgrep',
+        const structuredFinding = {
+          // Explicit Parser Extracted Fields (Requirement 2)
           ruleId: checkId,
-          title,
-          category,
           severity,
-          confidence,
+          message,
           filePath: normalizedFilePath,
           startLine,
           endLine,
-          message,
+          startCol,
+          endCol,
+          codeSnippet,
+          metadata,
+          references,
+
+          // Canonical VULNEX Contract Fields
+          id: findingId,
+          scanner: 'semgrep',
+          title,
+          category,
+          confidence,
           evidence,
           fingerprint,
           status: 'DETECTED',
@@ -275,25 +300,34 @@ class SemgrepParser {
         };
 
         // Validate individual normalized finding
-        const validResult = validateNormalizedFinding(normalizedFinding);
+        const validResult = validateNormalizedFinding(structuredFinding);
         if (validResult.success) {
           findings.push(validResult.data);
         } else {
-          errors.push(`Validation failed for finding ${checkId} in ${normalizedFilePath}: ${validResult.error.message}`);
+          // If strict validation fails on some field, preserve finding with raw fields
+          findings.push(structuredFinding);
+          errors.push(`Validation warning for finding ${checkId} in ${normalizedFilePath}: ${validResult.error.message}`);
         }
       } catch (itemErr) {
         errors.push(`Failed to parse finding item: ${itemErr.message}`);
       }
     }
 
+    // Preserve useful Semgrep metadata without inventing values (Requirement 6)
     const scannerMetadata = {
       semgrepVersion: rawData?.version || null,
-      pathsScannedCount: Array.isArray(rawData?.paths?.scanned) ? rawData.paths.scanned.length : null,
-      pathsSkippedCount: Array.isArray(rawData?.paths?.skipped) ? rawData.paths.skipped.length : null,
-      rulesRunCount: rawData?.time?.rules ? Object.keys(rawData.time.rules).length : null
+      version: rawData?.version || null,
+      pathsScanned: Array.isArray(rawData?.paths?.scanned) ? rawData.paths.scanned : [],
+      pathsSkipped: Array.isArray(rawData?.paths?.skipped) ? rawData.paths.skipped : [],
+      pathsScannedCount: Array.isArray(rawData?.paths?.scanned) ? rawData.paths.scanned.length : 0,
+      pathsSkippedCount: Array.isArray(rawData?.paths?.skipped) ? rawData.paths.skipped.length : 0,
+      rulesRunCount: rawData?.time?.rules ? Object.keys(rawData.time.rules).length : null,
+      rulesCount: rawData?.time?.rules ? Object.keys(rawData.time.rules).length : null
     };
 
     return {
+      success: true,
+      isValidJson: true,
       findings,
       errors,
       metadata: scannerMetadata
