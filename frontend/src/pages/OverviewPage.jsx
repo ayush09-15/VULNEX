@@ -17,14 +17,14 @@ import vulnexApi from '../services/api';
 
 export default function OverviewPage() {
   const navigate = useNavigate();
-  const [stats] = useState({
+  const [stats, setStats] = useState({
     totalFindings: 6,
     criticalHigh: 3,
     dependencyAdvisories: 2,
     verifiedFixes: 1,
   });
 
-  const [severityDistribution] = useState([
+  const [severityDistribution, setSeverityDistribution] = useState([
     { label: 'Critical', count: 1, color: 'bg-red-500', text: 'text-red-400' },
     { label: 'High', count: 2, color: 'bg-orange-500', text: 'text-orange-400' },
     { label: 'Medium', count: 2, color: 'bg-amber-500', text: 'text-amber-400' },
@@ -32,7 +32,7 @@ export default function OverviewPage() {
     { label: 'Info', count: 0, color: 'bg-slate-500', text: 'text-slate-400' },
   ]);
 
-  const [recentFindings] = useState([
+  const [recentFindings, setRecentFindings] = useState([
     {
       id: 'find_sql_001',
       title: 'SQL Injection via unsanitized query parameters',
@@ -75,11 +75,58 @@ export default function OverviewPage() {
     },
   ]);
 
+  const [latestScanId, setLatestScanId] = useState('scan_01JAZZ80');
+  const [latestScanStage, setLatestScanStage] = useState('REMEDIATION READY');
+
   useEffect(() => {
     let isMounted = true;
     const fetchDashboardData = async () => {
       try {
-        await vulnexApi.repositories.list();
+        const [findingsRes, scansRes] = await Promise.all([
+          vulnexApi.findings.list().catch(() => null),
+          vulnexApi.scans.list().catch(() => null)
+        ]);
+
+        const rawFindings = Array.isArray(findingsRes) ? findingsRes : (findingsRes?.data || []);
+        const rawScans = Array.isArray(scansRes) ? scansRes : (scansRes?.data || []);
+
+        if (isMounted && rawFindings.length > 0) {
+          const totalFindings = rawFindings.length;
+          const criticalCount = rawFindings.filter(f => f.severity === 'CRITICAL').length;
+          const highCount = rawFindings.filter(f => f.severity === 'HIGH').length;
+          const mediumCount = rawFindings.filter(f => f.severity === 'MEDIUM').length;
+          const lowCount = rawFindings.filter(f => f.severity === 'LOW').length;
+          const infoCount = rawFindings.filter(f => f.severity === 'INFO').length;
+
+          const criticalHigh = criticalCount + highCount;
+          const dependencyAdvisories = rawFindings.filter(
+            f => (f.scanner && f.scanner.toLowerCase() === 'npm-audit') || f.category === 'VULNERABLE_DEPENDENCY'
+          ).length;
+          const verifiedFixes = rawFindings.filter(f => f.status === 'VERIFIED').length;
+
+          setStats({
+            totalFindings,
+            criticalHigh,
+            dependencyAdvisories,
+            verifiedFixes,
+          });
+
+          setSeverityDistribution([
+            { label: 'Critical', count: criticalCount, color: 'bg-red-500', text: 'text-red-400' },
+            { label: 'High', count: highCount, color: 'bg-orange-500', text: 'text-orange-400' },
+            { label: 'Medium', count: mediumCount, color: 'bg-amber-500', text: 'text-amber-400' },
+            { label: 'Low', count: lowCount, color: 'bg-blue-500', text: 'text-blue-400' },
+            { label: 'Info', count: infoCount, color: 'bg-slate-500', text: 'text-slate-400' },
+          ]);
+
+          setRecentFindings(rawFindings.slice(0, 5));
+        }
+
+        if (isMounted && rawScans.length > 0) {
+          const latest = rawScans[rawScans.length - 1];
+          setLatestScanId(latest.id);
+          setLatestScanStage(latest.stage || latest.status || 'COMPLETED');
+        }
       } catch {
         // Fall back gracefully to preview data if backend is in initial state
       }
@@ -211,7 +258,7 @@ export default function OverviewPage() {
             </h2>
             <span className="inline-flex items-center gap-1.5 text-xs text-cyan-400 font-mono">
               <Activity className="w-3.5 h-3.5" />
-              Scan ID: scan_01JAZZ80
+              Scan ID: {latestScanId}
             </span>
           </div>
 
@@ -235,7 +282,7 @@ export default function OverviewPage() {
               <span className="hidden sm:inline text-slate-700">➔</span>
               <div className="flex items-center gap-2 text-cyan-400 font-bold">
                 <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
-                <span>4. REMEDIATION READY</span>
+                <span>4. {latestScanStage}</span>
               </div>
             </div>
           </div>

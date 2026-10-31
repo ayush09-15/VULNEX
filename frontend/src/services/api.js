@@ -186,8 +186,18 @@ export const vulnexApi = {
       const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/report`, { params });
       return res.data;
     },
-    exportReport: async (scanId, format = 'json') => {
-      const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/report`, { params: { format } });
+    exportReport: async (scanId, format = 'json', download = false) => {
+      const res = await axiosInstance.get(`/scans/${encodeURIComponent(scanId)}/export`, {
+        params: { format, ...(download ? { download: 'true' } : {}) }
+      });
+      return res.data;
+    },
+    cancel: async (scanId, payload = {}) => {
+      const res = await axiosInstance.post(`/scans/${encodeURIComponent(scanId)}/cancel`, payload);
+      return res.data;
+    },
+    delete: async (scanId) => {
+      const res = await axiosInstance.delete(`/scans/${encodeURIComponent(scanId)}`);
       return res.data;
     },
   },
@@ -214,12 +224,32 @@ export const vulnexApi = {
 
   // Patches
   patches: {
-    apply: async (patchId, payload = { confirm: true }) => {
+    list: async (params = {}) => {
+      const res = await axiosInstance.get('/patches', { params });
+      return res.data;
+    },
+    get: async (id) => {
+      const res = await axiosInstance.get(`/patches/${encodeURIComponent(id)}`);
+      return res.data;
+    },
+    approve: async (patchId, payload = {}) => {
+      const res = await axiosInstance.post(`/patches/${encodeURIComponent(patchId)}/approve`, payload);
+      return res.data;
+    },
+    reject: async (patchId, payload = {}) => {
+      const res = await axiosInstance.post(`/patches/${encodeURIComponent(patchId)}/reject`, payload);
+      return res.data;
+    },
+    apply: async (patchId, payload = { approved: true }) => {
       const res = await axiosInstance.post(`/patches/${encodeURIComponent(patchId)}/apply`, payload);
       return res.data;
     },
-    verify: async (patchId) => {
-      const res = await axiosInstance.post(`/patches/${encodeURIComponent(patchId)}/verify`);
+    verify: async (patchId, payload = {}) => {
+      const res = await axiosInstance.post(`/patches/${encodeURIComponent(patchId)}/verify`, payload);
+      return res.data;
+    },
+    rollback: async (patchId) => {
+      const res = await axiosInstance.post(`/patches/${encodeURIComponent(patchId)}/rollback`);
       return res.data;
     },
   },

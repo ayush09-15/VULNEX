@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import {
   Play,
   Loader2,
@@ -49,6 +49,7 @@ function getStageStatus(stageKey, currentStage, scanStatus) {
 
 export default function ScanPage() {
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Intake State
   const [targetType, setTargetType] = useState('FIXTURE'); // 'FIXTURE' | 'GITHUB' | 'ZIP'
@@ -67,6 +68,19 @@ export default function ScanPage() {
   const [activeStage, setActiveStage] = useState('IDLE'); // 'IDLE' | 'QUEUED' | 'PREPARING' | 'SCANNING' | 'NORMALIZING' | 'COMPLETED' | 'PARTIAL' | 'FAILED'
   const [scanRecord, setScanRecord] = useState(null);
   const [error, setError] = useState(null);
+
+  useEffect(() => {
+    if (location.state) {
+      if (location.state.sourceType === 'GITHUB' && location.state.sourceUrl) {
+        setTargetType('GITHUB');
+        setGitUrl(location.state.sourceUrl);
+        if (location.state.defaultRef) setRefName(location.state.defaultRef);
+      }
+      if (location.state.repositoryId) {
+        setLastTargetRepoId(location.state.repositoryId);
+      }
+    }
+  }, [location.state]);
 
   const toggleScanner = (scannerId) => {
     setSelectedScanners((prev) =>

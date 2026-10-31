@@ -1,11 +1,17 @@
 import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   ShieldAlert,
   CheckCircle2,
   AlertCircle,
   FileCode2,
   RefreshCw,
-  FolderGit2
+  FolderGit2,
+  Wrench,
+  Sparkles,
+  Layers,
+  RotateCcw,
+  Loader2
 } from 'lucide-react';
 import DiffViewer from '../components/remediation/DiffViewer';
 import VerificationChecklist from '../components/verification/VerificationChecklist';
@@ -40,33 +46,99 @@ const SAMPLE_PATCH = {
 };
 
 export default function RemediationPage() {
+  const location = useLocation();
+  const incomingFinding = location.state?.finding;
+  const incomingPatchId = location.state?.patchId;
+
   const [patch, setPatch] = useState(SAMPLE_PATCH);
+  const [patchesList, setPatchesList] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [generatingPatch, setGeneratingPatch] = useState(false);
   const [actionMessage, setActionMessage] = useState(null);
   const [applyResult, setApplyResult] = useState(null);
   const [verificationResult, setVerificationResult] = useState(null);
   const [isVerifying, setIsVerifying] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
 
   useEffect(() => {
-    // Attempt to load any live patch if available, or fall back to default proposal
     let mounted = true;
     async function loadPatches() {
       try {
-        if (vulnexApi.patches?.list) {
-          const res = await vulnexApi.patches.list();
-          if (mounted && res?.data && res.data.length > 0) {
-            setPatch(res.data[0]);
+        setLoading(true);
+        const res = await vulnexApi.patches.list();
+        const items = Array.isArray(res) ? res : (res?.data || []);
+        if (mounted) {
+          setPatchesList(items);
+
+          if (incomingPatchId) {
+            const found = items.find(p => p.id === incomingPatchId);
+            if (found) {
+              setPatch(found);
+              return;
+            }
+          }
+
+          if (incomingFinding) {
+            const found = items.find(p => p.findingId === incomingFinding.id);
+            if (found) {
+              setPatch(found);
+              return;
+            } else if (incomingFinding.proposedPatch) {
+              setPatch(incomingFinding.proposedPatch);
+              return;
+            }
+          }
+
+          if (items.length > 0) {
+            setPatch(items[0]);
           }
         }
       } catch {
         // Fall back cleanly to sample proposal
+      } finally {
+        if (mounted) setLoading(false);
       }
     }
     loadPatches();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [incomingFinding, incomingPatchId]);
+
+  const handleGeneratePatchForFinding = async () => {
+    if (!incomingFinding) return;
+    setGeneratingPatch(true);
+    setActionMessage(null);
+    try {
+      const res = await vulnexApi.findings.generatePatch(incomingFinding.id);
+      const newPatch = res?.data || res;
+      if (newPatch) {
+        setPatch(newPatch);
+        setPatchesList((prev) => [newPatch, ...prev.filter(p => p.id !== newPatch.id)]);
+        setActionMessage({
+          type: 'success',
+          text: `AI patch proposal generated for finding ${incomingFinding.id}. Ready for human review.`
+        });
+      }
+    } catch (err) {
+      setActionMessage({
+        type: 'error',
+        text: err?.message || 'Failed to generate AI patch proposal.'
+      });
+    } finally {
+      setGeneratingPatch(false);
+    }
+  };
+
+  const handleSelectPatch = (selectedId) => {
+    const selected = patchesList.find(p => p.id === selectedId);
+    if (selected) {
+      setPatch(selected);
+      setApplyResult(null);
+      setVerificationResult(null);
+      setActionMessage(null);
+    }
+  };
 
   const handleApprove = async (patchId, comments) => {
     setLoading(true);
@@ -196,6 +268,32 @@ export default function RemediationPage() {
     }
   };
 
+  const handleRollback = async (patchId) => {
+    setIsRollingBack(true);
+    setActionMessage(null);
+    try {
+      await vulnexApi.patches.rollback(patchId);
+      setPatch((prev) => ({
+        ...prev,
+        status: 'VALIDATED',
+        appliedWorkspaceId: null
+      }));
+      setApplyResult(null);
+      setVerificationResult(null);
+      setActionMessage({
+        type: 'info',
+        text: 'Disposable workspace reset: patch successfully rolled back. Source repository remains pristine.'
+      });
+    } catch (err) {
+      setActionMessage({
+        type: 'error',
+        text: err?.message || 'Failed to rollback patch in temporary workspace.'
+      });
+    } finally {
+      setIsRollingBack(false);
+    }
+  };
+
   return (
     <div className="space-y-6 animate-fadeIn pb-12">
       {/* Page Title */}
@@ -215,6 +313,68 @@ export default function RemediationPage() {
           <span>Disposable Workspace: Isolated</span>
         </div>
       </div>
+
+      {/* Target Finding Context Bar (when navigated from findings) */}
+      {incomingFinding && (
+        <div className="p-4 rounded-xl bg-slate-900/70 border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono uppercase px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800">
+                Target Finding
+              </span>
+              <span className="text-xs font-mono text-slate-400">{incomingFinding.id}</span>
+              <span className="text-xs font-semibold text-slate-200">{incomingFinding.title}</span>
+            </div>
+            <div className="text-xs font-mono text-slate-500">
+              {incomingFinding.filePath}:{incomingFinding.startLine} • {incomingFinding.category} ({incomingFinding.severity})
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGeneratePatchForFinding}
+            disabled={generatingPatch}
+            className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 text-white text-xs font-semibold font-mono transition-all shadow-md shrink-0"
+          >
+            {generatingPatch ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Generating Patch...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Regenerate with AI</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
+      {/* Patch Selector if multiple patches exist */}
+      {patchesList.length > 1 && (
+        <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-800 flex items-center gap-3 overflow-x-auto">
+          <span className="text-xs font-mono text-slate-400 shrink-0 flex items-center gap-1.5">
+            <Layers className="w-3.5 h-3.5 text-cyan-400" />
+            Available Patches ({patchesList.length}):
+          </span>
+          <div className="flex items-center gap-2">
+            {patchesList.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => handleSelectPatch(p.id)}
+                className={`px-3 py-1 rounded-lg text-xs font-mono transition-all whitespace-nowrap ${
+                  patch?.id === p.id
+                    ? 'bg-cyan-600 text-white font-semibold'
+                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                }`}
+              >
+                {p.id} ({p.reviewState || p.status})
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Action Notification */}
       {actionMessage && (
@@ -246,6 +406,27 @@ export default function RemediationPage() {
         onApply={handleApply}
         isLoading={loading}
       />
+
+      {/* Workspace Rollback Action when applied */}
+      {(patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED') && (
+        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
+          <div className="space-y-0.5">
+            <span className="text-xs font-semibold text-slate-200 block">Workspace Isolation Status</span>
+            <span className="text-[11px] font-mono text-slate-400 block">
+              Applied in disposable workspace: <code className="text-cyan-400">{patch.appliedWorkspaceId || 'ws_disposable'}</code>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => handleRollback(patch.id)}
+            disabled={isRollingBack}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:bg-slate-900 text-slate-300 text-xs font-mono transition-all border border-slate-700"
+          >
+            <RotateCcw className={`w-3.5 h-3.5 ${isRollingBack ? 'animate-spin' : ''}`} />
+            <span>Rollback Workspace</span>
+          </button>
+        </div>
+      )}
 
       {/* Verification Checklist (Commit 40) */}
       {(applyResult || patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED' || verificationResult) && (
