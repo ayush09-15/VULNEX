@@ -1,0 +1,7 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "minimist": {
+      "name": "minimist",
+      "severity": "critical",
+      "incomplete_json_corrupted:::
