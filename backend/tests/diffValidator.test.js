@@ -325,6 +325,7 @@ describe('Independent Unified Diff & Changed-File Path Validator', () => {
     let tempDir;
     let workspaceDir;
     let outsideDir;
+    let hasSymlinks = false;
 
     before(() => {
       tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vulnex-diff-validator-test-'));
@@ -341,14 +342,14 @@ describe('Independent Unified Diff & Changed-File Path Validator', () => {
       // Create target outside file
       fs.writeFileSync(path.join(outsideDir, 'secret.env'), 'SECRET_KEY=leaked\n');
 
-      // Create symlink directory pointing outside
-      fs.symlinkSync(outsideDir, path.join(workspaceDir, 'symlink_outside'));
-
-      // Create symlink file pointing outside
-      fs.symlinkSync(path.join(outsideDir, 'secret.env'), path.join(workspaceDir, 'symlink_file.env'));
-
-      // Create safe internal symlink
-      fs.symlinkSync(path.join(workspaceDir, 'src', 'app.js'), path.join(workspaceDir, 'src', 'app_link.js'));
+      try {
+        fs.symlinkSync(outsideDir, path.join(workspaceDir, 'symlink_outside'));
+        fs.symlinkSync(path.join(outsideDir, 'secret.env'), path.join(workspaceDir, 'symlink_file.env'));
+        fs.symlinkSync(path.join(workspaceDir, 'src', 'app.js'), path.join(workspaceDir, 'src', 'app_link.js'));
+        hasSymlinks = true;
+      } catch (e) {
+        // Windows non-elevated host
+      }
     });
 
     after(() => {
@@ -363,26 +364,30 @@ describe('Independent Unified Diff & Changed-File Path Validator', () => {
       assert.equal(check.normalizedPath, 'src/app.js');
     });
 
-    it('should reject symlink directory pointing outside workspace', () => {
+    it('should reject symlink directory pointing outside workspace', (t) => {
+      if (!hasSymlinks) { if (t && t.skip) t.skip('Symlinks not supported on host'); return; }
       const check = validateWorkspacePath('symlink_outside/secret.env', workspaceDir);
       assert.equal(check.valid, false);
       assert.equal(check.code, 'SYMLINK_WORKSPACE_ESCAPE');
       assert.ok(check.error.includes('resolves via symlink outside workspace'));
     });
 
-    it('should reject symlink file pointing outside workspace', () => {
+    it('should reject symlink file pointing outside workspace', (t) => {
+      if (!hasSymlinks) { if (t && t.skip) t.skip('Symlinks not supported on host'); return; }
       const check = validateWorkspacePath('symlink_file.env', workspaceDir);
       assert.equal(check.valid, false);
       assert.equal(check.code, 'SYMLINK_WORKSPACE_ESCAPE');
       assert.ok(check.error.includes('resolves via symlink outside workspace'));
     });
 
-    it('should accept internal symlink resolving inside workspace', () => {
+    it('should accept internal symlink resolving inside workspace', (t) => {
+      if (!hasSymlinks) { if (t && t.skip) t.skip('Symlinks not supported on host'); return; }
       const check = validateWorkspacePath('src/app_link.js', workspaceDir);
       assert.equal(check.valid, true);
     });
 
-    it('should reject diff modifying path that resolves via symlink outside workspace', () => {
+    it('should reject diff modifying path that resolves via symlink outside workspace', (t) => {
+      if (!hasSymlinks) { if (t && t.skip) t.skip('Symlinks not supported on host'); return; }
       const diff = [
         '--- a/symlink_outside/secret.env',
         '+++ b/symlink_outside/secret.env',
