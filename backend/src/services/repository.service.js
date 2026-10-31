@@ -17,19 +17,37 @@ const zipService = require('./zip.service');
 // In-memory repository persistence store
 const repositoriesStore = new Map();
 
-// Default fixture repository
+// Default fixture repository & sample repository
 const defaultFixtureId = 'repo_fixture_01';
+const sampleJuiceShopId = 'repo_01JAZZ80001';
 const defaultFixturePath = path.resolve(__dirname, '../../../fixtures');
-repositoriesStore.set(defaultFixtureId, {
-  id: defaultFixtureId,
-  sourceType: 'LOCAL_FIXTURE',
-  displayName: 'intentionally-vulnerable-node-app',
-  sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
-  defaultRef: 'main',
-  createdAt: '2026-10-31T03:00:00.000Z',
-  ownerId: null,
-  workspacePath: fs.existsSync(defaultFixturePath) ? defaultFixturePath : './fixtures'
-});
+const resolvedFixtureWorkspace = fs.existsSync(defaultFixturePath) ? defaultFixturePath : './fixtures';
+
+function seedDefaultRepositories() {
+  repositoriesStore.set(defaultFixtureId, {
+    id: defaultFixtureId,
+    sourceType: 'LOCAL_FIXTURE',
+    displayName: 'intentionally-vulnerable-node-app',
+    sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
+    defaultRef: 'main',
+    createdAt: '2026-10-31T03:00:00.000Z',
+    ownerId: null,
+    workspacePath: resolvedFixtureWorkspace
+  });
+
+  repositoriesStore.set(sampleJuiceShopId, {
+    id: sampleJuiceShopId,
+    sourceType: 'GITHUB',
+    displayName: 'juice-shop-sample',
+    sanitizedSourceUrl: 'https://github.com/juice-shop/juice-shop',
+    defaultRef: 'main',
+    createdAt: '2026-10-31T03:00:00.000Z',
+    ownerId: null,
+    workspacePath: resolvedFixtureWorkspace
+  });
+}
+
+seedDefaultRepositories();
 
 /**
  * Validates and sanitizes a GitHub repository URL
@@ -273,15 +291,7 @@ function deleteRepository(id) {
  */
 function _resetStore() {
   repositoriesStore.clear();
-  repositoriesStore.set(defaultFixtureId, {
-    id: defaultFixtureId,
-    sourceType: 'LOCAL_FIXTURE',
-    displayName: 'intentionally-vulnerable-node-app',
-    sanitizedSourceUrl: null,
-    defaultRef: 'main',
-    createdAt: '2026-10-31T03:00:00.000Z',
-    ownerId: null
-  });
+  seedDefaultRepositories();
 }
 
 const clearRepositories = _resetStore;
