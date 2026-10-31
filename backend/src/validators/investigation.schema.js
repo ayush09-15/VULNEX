@@ -222,7 +222,7 @@ function extractJsonString(raw) {
  * @returns {{ success: boolean, data?: object, error?: { code: string, message: string, details: any[] } }}
  */
 function parseAndValidateAIInvestigation(rawInput) {
-  if (rawInput === null || rawInput === undefined || rawInput === '') {
+  if (rawInput === null || rawInput === undefined || (typeof rawInput === 'string' && rawInput.trim() === '')) {
     return {
       success: false,
       error: {
@@ -251,12 +251,18 @@ function parseAndValidateAIInvestigation(rawInput) {
     try {
       parsed = JSON.parse(jsonStr);
     } catch (parseErr) {
+      let cleanMsg = String(parseErr.message || 'JSON parse error');
+      cleanMsg = cleanMsg
+        .replace(/\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{30,}\b/g, '[REDACTED_TOKEN]')
+        .replace(/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_AWS_KEY]')
+        .replace(/(password|secret|api_key|token)\s*[:=]\s*['"]?[^\s'"]+['"]?/gi, '$1=[REDACTED_SECRET]');
+
       return {
         success: false,
         error: {
           code: 'MALFORMED_AI_JSON',
-          message: `Failed to parse AI output as JSON: ${parseErr.message}`,
-          details: [{ error: parseErr.message }]
+          message: `Failed to parse AI output as JSON: ${cleanMsg}`,
+          details: [{ error: cleanMsg }]
         }
       };
     }
