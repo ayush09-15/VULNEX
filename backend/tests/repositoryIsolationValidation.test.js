@@ -355,4 +355,84 @@ describe('Repository Isolation & Truthful Multi-Repo Scanning (Phase 4 Validatio
     assert.ok(failEvent);
     assert.ok(failEvent.message.includes('Workspace preparation failed'));
   });
+
+  // --------------------------------------------------------------------------
+  // Test 10: scanOrchestrator.getAllFindings({ repositoryId }) strictly partitions findings by repository
+  // --------------------------------------------------------------------------
+  it('10. scanOrchestrator.getAllFindings({ repositoryId }) strictly partitions findings by repository', async () => {
+    const scanA = await scanOrchestrator.startScan({
+      repositoryId: 'repo_partition_A',
+      repositoryPath: repoAPath,
+      scanners: ['patterns']
+    });
+    const scanB = await scanOrchestrator.startScan({
+      repositoryId: 'repo_partition_B',
+      repositoryPath: repoBPath,
+      scanners: ['patterns']
+    });
+
+    const findingsRepoA = scanOrchestrator.getAllFindings({ repositoryId: 'repo_partition_A' });
+    const findingsRepoB = scanOrchestrator.getAllFindings({ repositoryId: 'repo_partition_B' });
+
+    assert.ok(findingsRepoA.length >= 2, 'Repo A should have pattern findings');
+    assert.strictEqual(findingsRepoB.length, 0, 'Repo B (clean) should have 0 findings');
+
+    // Confirm every finding in Repo A belongs to scanA
+    for (const f of findingsRepoA) {
+      assert.strictEqual(f.scanId, scanA.id);
+    }
+  });
+
+  // --------------------------------------------------------------------------
+  // Test 11: End-to-end HTTP route GET /api/findings with repositoryId and scanId filters
+  // --------------------------------------------------------------------------
+  it('11. End-to-end HTTP route GET /api/findings filters by repositoryId and scanId without leakage', async () => {
+    const express = require('express');
+    const http = require('http');
+    const findingRoutes = require('../src/routes/finding.routes');
+
+    const app = express();
+    app.use(express.json());
+    app.use('/api/findings', findingRoutes);
+
+    const dispatch = (method, url) => {
+      return new Promise((resolve) => {
+        const [pathPart, queryPart] = url.split('?');
+        const parsedQuery = {};
+        if (queryPart) {
+          for (const [k, v] of new URLSearchParams(queryPart)) {
+            parsedQuery[k] = v;
+          }
+        }
+        const req = new http.IncomingMessage();
+        req.method = method.toUpperCase();
+        req.url = url;
+        req.originalUrl = url;
+        req.headers = { 'content-type': 'application/json', 'x-request-id': 'req_test' };
+        req.body = {};
+        req.query = parsedQuery;
+
+        const res = new http.ServerResponse(req);
+        let rawBody = '';
+        res.write = (chunk) => { if (chunk) rawBody += chunk; return true; };
+        res.end = (chunk) => {
+          if (chunk) rawBody += chunk;
+          let parsed = null;
+          try { parsed = JSON.parse(rawBody); } catch (_) { parsed = rawBody; }
+          resolve({ statusCode: res.statusCode, body: parsed });
+        };
+        app.handle(req, res);
+      });
+    };
+
+    const resA = await dispatch('GET', '/api/findings?repositoryId=repo_partition_A');
+    assert.strictEqual(resA.statusCode, 200);
+    assert.ok(resA.body.success);
+    assert.ok(resA.body.data.length >= 2);
+
+    const resB = await dispatch('GET', '/api/findings?repositoryId=repo_partition_B');
+    assert.strictEqual(resB.statusCode, 200);
+    assert.ok(resB.body.success);
+    assert.strictEqual(resB.body.data.length, 0);
+  });
 });

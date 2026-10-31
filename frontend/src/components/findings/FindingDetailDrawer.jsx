@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   X,
   Sparkles,
@@ -7,7 +7,8 @@ import {
   Wrench,
   CheckCircle2,
   Copy,
-  Loader2
+  Loader2,
+  AlertTriangle
 } from 'lucide-react';
 import SeverityBadge from '../common/SeverityBadge';
 import InvestigationResultPanel from './InvestigationResultPanel';
@@ -22,6 +23,25 @@ export default function FindingDetailDrawer({
   const [investigating, setInvestigating] = useState(false);
   const [copiedFingerprint, setCopiedFingerprint] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
+
+  // Fetch enriched details (sourceContext lines and persisted investigation) on mount / change
+  useEffect(() => {
+    let isMounted = true;
+    if (finding?.id && !finding.sourceContext) {
+      vulnexApi.findings.get(finding.id)
+        .then((fullFinding) => {
+          const item = fullFinding?.data || fullFinding;
+          if (isMounted && item && (item.sourceContext || item.investigation)) {
+            onUpdateFinding?.(finding.id, {
+              ...(item.sourceContext ? { sourceContext: item.sourceContext } : {}),
+              ...(item.investigation ? { investigation: item.investigation, aiInvestigation: item.investigation } : {})
+            });
+          }
+        })
+        .catch(() => {});
+    }
+    return () => { isMounted = false; };
+  }, [finding?.id]);
 
   if (!finding) return null;
 
@@ -38,46 +58,29 @@ export default function FindingDetailDrawer({
     setErrorMsg(null);
     try {
       const res = await vulnexApi.findings.investigate(finding.id);
-      if (res && res.data) {
+      const invData = res?.data || res;
+      if (invData && (invData.id || invData.assessment)) {
         onUpdateFinding?.(finding.id, {
-          aiInvestigation: res.data,
+          investigation: invData,
+          aiInvestigation: invData,
           status: 'TRIAGED'
         });
+      } else {
+        setErrorMsg('Investigation returned empty or unrecognized payload.');
       }
-    } catch {
-      // In offline / preview demo mode, supply structured mock investigation adhering to Bible 8.4
-      onUpdateFinding?.(finding.id, {
-        aiInvestigation: {
-          assessment: 'LIKELY_TRUE',
-          severity: finding.severity,
-          summary: `Direct user input reaches database sink without parameterized encapsulation in ${finding.filePath}.`,
-          evidence: [
-            `Untrusted query parameter concatenated into SQL string at line ${finding.startLine}`,
-            'No ORM escaping or input validation detected in parent controller'
-          ],
-          preconditions: [
-            'Attacker must have network access to GET endpoint',
-            'Database driver allows multi-statement queries or error disclosure'
-          ],
-          potentialImpact: 'Full read access to database records, credential exfiltration, potential remote code execution via database UDF.',
-          recommendedFix: 'Refactor SQL query to use parameterized query bind parameters ($1, $2) rather than string interpolation.',
-          confidence: 'HIGH',
-          limitations: [
-            'Static AST analysis without live database verification',
-            'Input validation middleware upstream not inspected in current bounded slice'
-          ],
-          model: 'gemma-2-9b-it',
-          promptVersion: 'vulnex-investigation-v1',
-          createdAt: new Date().toISOString()
-        },
-        status: 'TRIAGED'
-      });
+    } catch (err) {
+      setErrorMsg(err.message || 'AI investigation failed.');
     } finally {
       setInvestigating(false);
     }
   };
 
-  const ai = finding.aiInvestigation;
+  // Support both canonical 'investigation' and legacy 'aiInvestigation' property names
+  const ai = finding.investigation || finding.aiInvestigation;
+
+  const rawEvidence = typeof finding.evidence === 'string'
+    ? finding.evidence
+    : (finding.codeSnippet || (finding.evidence ? JSON.stringify(finding.evidence) : ''));
 
   return (
     <div
@@ -123,22 +126,23 @@ export default function FindingDetailDrawer({
       <div className="flex-1 overflow-y-auto p-6 space-y-6 text-xs">
         {/* Error Alert if any */}
         {errorMsg && (
-          <div className="p-3 rounded-xl bg-red-950/50 border border-red-800/60 text-red-300 font-mono">
-            {errorMsg}
+          <div className="p-3.5 rounded-xl bg-red-950/50 border border-red-800/60 text-red-300 font-mono flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+            <span>{errorMsg}</span>
           </div>
         )}
 
         {/* =================================================================== */}
-        {/* SECTION 1: DETERMINISTIC SCANNER FACTS (GROUND TRUTH) */}
+        {/* SECTION 1: DETERMINISTIC SCANNER FACTS (IMMUTABLE GROUND TRUTH) */}
         {/* =================================================================== */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 font-mono font-bold text-slate-300 uppercase tracking-wider text-[11px]">
               <Terminal className="w-4 h-4 text-cyan-400" />
-              <span>1. Scanner Ground Truth (Deterministic)</span>
+              <span>1. Scanner Evidence & Coordinate Facts</span>
             </div>
-            <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-emerald-950/40 text-emerald-400 border border-emerald-800/40">
-              Factual Evidence
+            <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-slate-900 text-slate-400 border border-slate-800">
+              Deterministic Output
             </span>
           </div>
 
@@ -195,7 +199,7 @@ export default function FindingDetailDrawer({
           </div>
         </div>
 
-        {/* Source Code Evidence Panel */}
+        {/* Source Code Evidence Panel: Real code lines from workspace or evidence */}
         <div className="space-y-2">
           <div className="flex items-center gap-2 font-mono font-bold text-slate-300 uppercase tracking-wider text-[11px]">
             <FileCode className="w-4 h-4 text-cyan-400" />
@@ -208,13 +212,32 @@ export default function FindingDetailDrawer({
               <span className="text-cyan-400 font-bold">Line {finding.startLine}</span>
             </div>
             <div className="p-3 text-slate-300 space-y-1 overflow-x-auto">
-              <div className="text-slate-600">22 |   const &#123; id &#125; = req.query;</div>
-              <div className="text-slate-600">23 | </div>
-              <div className="bg-red-950/40 text-red-300 px-2 py-1 rounded -mx-1 border-l-2 border-red-500 flex items-center justify-between">
-                <span>{finding.startLine || 24} |   const query = `SELECT * FROM users WHERE id = '${"$"}&#123;id&#125;'`;</span>
-                <span className="text-[10px] text-red-400 font-bold uppercase ml-2 flex-shrink-0">Vulnerable Sink</span>
-              </div>
-              <div className="text-slate-600">25 |   const user = await db.query(query);</div>
+              {finding.sourceContext?.lines && finding.sourceContext.lines.length > 0 ? (
+                finding.sourceContext.lines.map((l) => (
+                  <div
+                    key={l.line}
+                    className={
+                      l.isTarget
+                        ? "bg-red-950/40 text-red-300 px-2 py-1 rounded -mx-1 border-l-2 border-red-500 flex items-center justify-between font-mono"
+                        : "text-slate-500 font-mono"
+                    }
+                  >
+                    <span>{l.line} |   {l.content}</span>
+                    {l.isTarget && (
+                      <span className="text-[10px] text-red-400 font-bold uppercase ml-2 flex-shrink-0">Vulnerable Sink</span>
+                    )}
+                  </div>
+                ))
+              ) : rawEvidence ? (
+                <div className="bg-red-950/40 text-red-300 px-2 py-1 rounded -mx-1 border-l-2 border-red-500 flex items-center justify-between font-mono">
+                  <span>{finding.startLine} |   {rawEvidence}</span>
+                  <span className="text-[10px] text-red-400 font-bold uppercase ml-2 flex-shrink-0">Vulnerable Sink</span>
+                </div>
+              ) : (
+                <div className="text-slate-500 italic p-1">
+                  No source excerpt captured for this finding.
+                </div>
+              )}
             </div>
           </div>
         </div>

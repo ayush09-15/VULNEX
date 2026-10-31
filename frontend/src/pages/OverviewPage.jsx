@@ -82,13 +82,25 @@ export default function OverviewPage() {
     let isMounted = true;
     const fetchDashboardData = async () => {
       try {
-        const [findingsRes, scansRes] = await Promise.all([
-          vulnexApi.findings.list().catch(() => null),
-          vulnexApi.scans.list().catch(() => null)
-        ]);
-
-        const rawFindings = Array.isArray(findingsRes) ? findingsRes : (findingsRes?.data || []);
+        const scansRes = await vulnexApi.scans.list().catch(() => null);
         const rawScans = Array.isArray(scansRes) ? scansRes : (scansRes?.data || []);
+
+        let rawFindings = [];
+        let latest = null;
+
+        if (rawScans.length > 0) {
+          latest = rawScans[rawScans.length - 1];
+          setLatestScanId(latest.id);
+          setLatestScanStage(latest.stage || latest.status || 'COMPLETED');
+
+          // Retrieve findings strictly scoped to the active/latest scan
+          const findingsRes = await vulnexApi.scans.getFindings(latest.id).catch(() => null);
+          rawFindings = Array.isArray(findingsRes) ? findingsRes : (findingsRes?.data || []);
+        } else {
+          // If no scans are registered, attempt generic findings query
+          const findingsRes = await vulnexApi.findings.list().catch(() => null);
+          rawFindings = Array.isArray(findingsRes) ? findingsRes : (findingsRes?.data || []);
+        }
 
         if (isMounted && rawFindings.length > 0) {
           const totalFindings = rawFindings.length;
@@ -323,7 +335,14 @@ export default function OverviewPage() {
           </div>
 
           <button
-            onClick={() => navigate('/findings')}
+            onClick={() => {
+              if (latestScanId) {
+                localStorage.setItem('vulnex_selected_scan_id', latestScanId);
+              }
+              navigate(latestScanId ? `/findings?scanId=${latestScanId}` : '/findings', {
+                state: { scanId: latestScanId }
+              });
+            }}
             className="inline-flex items-center gap-1.5 text-xs font-medium text-cyan-400 hover:text-cyan-300 hover:underline"
           >
             <span>View all in Explorer</span>
@@ -383,7 +402,15 @@ export default function OverviewPage() {
                   </td>
                   <td className="py-3.5 px-4 text-right whitespace-nowrap">
                     <button
-                      onClick={() => navigate('/findings')}
+                      onClick={() => {
+                        const targetScan = finding.scanId || latestScanId;
+                        if (targetScan) {
+                          localStorage.setItem('vulnex_selected_scan_id', targetScan);
+                        }
+                        navigate(targetScan ? `/findings?scanId=${targetScan}` : '/findings', {
+                          state: { scanId: targetScan }
+                        });
+                      }}
                       className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-slate-800 hover:bg-cyan-600 hover:text-white text-slate-300 transition-colors font-sans text-xs font-medium"
                     >
                       <span>Investigate</span>

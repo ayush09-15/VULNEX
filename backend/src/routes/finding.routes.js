@@ -20,19 +20,23 @@ const scannerService = require('../services/scanner.service');
 const patchService = require('../services/patch.service');
 const verificationService = require('../services/verification.service');
 const aiService = require('../services/ai.service');
+const inventoryService = require('../services/inventory.service');
 
 // ----------------------------------------------------------------------------
 // GET /api/findings - List findings with optional query filters
 // ----------------------------------------------------------------------------
 router.get('/', (req, res) => {
   try {
-    const { scanId, severity, status, category, scanner } = req.query;
+    const { scanId, severity, status, category, scanner, repositoryId } = req.query;
 
-    let findings = scanOrchestrator.getAllFindings({ scanId, severity, status, category, scanner });
-    if (!findings || findings.length === 0) {
+    let findings = scanOrchestrator.getAllFindings({ scanId, severity, status, category, scanner, repositoryId });
+    if (!Array.isArray(findings)) {
       findings = scannerService.getAllFindings();
       if (scanId) {
         findings = findings.filter(f => f.scanId === scanId);
+      }
+      if (repositoryId) {
+        findings = findings.filter(f => f.repositoryId === repositoryId);
       }
       if (severity) {
         findings = findings.filter(f => f.severity && f.severity.toUpperCase() === severity.toUpperCase());
@@ -79,15 +83,35 @@ router.get('/:id', (req, res) => {
     }
 
     const investigation = investigationService.getInvestigationByFindingId(findingId);
-    const enrichedFinding = investigation
-      ? {
-          ...finding,
-          investigationId: investigation.id,
-          aiAssessment: investigation.assessment,
-          aiConfidence: investigation.confidence,
-          investigation
-        }
-      : finding;
+    let sourceContext = null;
+    if (finding.scanId && finding.filePath) {
+      const scan = (typeof scanOrchestrator.getScan === 'function' ? scanOrchestrator.getScan(finding.scanId) : null) ||
+                   (typeof scannerService.getScan === 'function' ? scannerService.getScan(finding.scanId) : null);
+      if (scan && scan.workspacePath) {
+        try {
+          sourceContext = inventoryService.getFileExcerpt(
+            scan.workspacePath,
+            finding.filePath,
+            finding.startLine || 1,
+            finding.endLine || finding.startLine || 1,
+            { contextLines: 4 }
+          );
+        } catch (_) {}
+      }
+    }
+
+    const enrichedFinding = {
+      ...finding,
+      ...(sourceContext ? { sourceContext } : {}),
+      ...(investigation
+        ? {
+            investigationId: investigation.id,
+            aiAssessment: investigation.assessment,
+            aiConfidence: investigation.confidence,
+            investigation
+          }
+        : {})
+    };
 
     return apiResponse.success(res, enrichedFinding, 200);
   } catch (err) {

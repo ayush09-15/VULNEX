@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { scanWithSemgrep, semgrepService } = require('./semgrep.service');
+const syntaxAwareScanner = require('./syntaxAwareScanner');
 
 // Default security rules for lightweight fallback SAST pattern matching
 const SECURITY_RULES = [
@@ -11,7 +12,6 @@ const SECURITY_RULES = [
     category: 'SQL_INJECTION',
     cwe: 'CWE-89',
     severity: 'CRITICAL',
-    pattern: /(?:query|execute|raw)\s*\(\s*[`'"].*?\$\{.*?\}|SELECT\s+.*?\s+FROM\s+.*?\s*\+\s*[\w\.]+/i,
     description: 'Direct concatenation or interpolation of untrusted input into SQL queries detected.',
     remediation: 'Use parameterized queries or prepared statements instead of string concatenation.'
   },
@@ -21,9 +21,17 @@ const SECURITY_RULES = [
     category: 'COMMAND_INJECTION',
     cwe: 'CWE-78',
     severity: 'CRITICAL',
-    pattern: /(?:child_process|cp)\.(?:exec|execSync)\s*\(\s*[`'"].*?\$\{.*?\}|eval\s*\(|new\s+Function\s*\(/,
-    description: 'Unsafe execution of system commands or arbitrary code evaluation using dynamic input.',
-    remediation: 'Use child_process.execFile with validated arguments, and avoid eval().'
+    description: 'Unsafe execution of system commands using dynamic input.',
+    remediation: 'Use child_process.execFile with validated arguments, and avoid shell invocation.'
+  },
+  {
+    id: 'VULN-002',
+    name: 'Code Injection via Dynamic Evaluation',
+    category: 'CODE_INJECTION',
+    cwe: 'CWE-95',
+    severity: 'CRITICAL',
+    description: 'Arbitrary code evaluation using dynamic input passed to eval() or new Function().',
+    remediation: 'Avoid eval() and new Function(); parse structured data with JSON.parse.'
   },
   {
     id: 'VULN-003',
@@ -31,7 +39,6 @@ const SECURITY_RULES = [
     category: 'HARDCODED_SECRET',
     cwe: 'CWE-798',
     severity: 'HIGH',
-    pattern: /(?:api_?key|secret|password|auth_?token|jwt_?secret)\s*[:=]\s*['"`][A-Za-z0-9_\-\.]{16,}['"`]/i,
     description: 'Sensitive credentials or API keys embedded directly into source code.',
     remediation: 'Move secrets into environment variables and reference them via process.env.'
   },
@@ -41,7 +48,6 @@ const SECURITY_RULES = [
     category: 'PATH_TRAVERSAL',
     cwe: 'CWE-22',
     severity: 'HIGH',
-    pattern: /fs\.(?:readFile|readFileSync|createReadStream)\s*\(\s*(?:req\.(?:query|params|body)|path\.join\([^)]*req\.)/,
     description: 'File system access using unsanitized user path, enabling directory traversal.',
     remediation: 'Validate input against an allowlist and resolve paths safely with path.resolve() within allowed root.'
   },
@@ -61,7 +67,6 @@ const SECURITY_RULES = [
     category: 'XSS',
     cwe: 'CWE-79',
     severity: 'HIGH',
-    pattern: /dangerouslySetInnerHTML|innerHTML\s*=\s*(?:req\.|props\.|[^'"]*\+)/,
     description: 'Direct insertion of untrusted data into DOM without sanitization.',
     remediation: 'Sanitize HTML inputs using DOMPurify or use safe text node APIs.'
   },
@@ -88,42 +93,145 @@ class ScannerService {
   }
 
   /**
-   * Scan raw code snippet or file content directly
+   * Scan raw code snippet or file content directly using syntax awareness
    * @param {string} content Source code string
    * @param {string} filePath Optional file name/path
    * @returns {Array} List of detected vulnerabilities
    */
   scanContent(content, filePath = 'snippet.js') {
     const findings = [];
-    const lines = content.split('\n');
+    const lines = syntaxAwareScanner.analyzeLines(content);
 
-    for (const rule of this.rules) {
-      if (rule.pattern.test(content)) {
-        lines.forEach((line, index) => {
-          if (rule.pattern.test(line)) {
-            const findingId = `find_${crypto.randomBytes(6).toString('hex')}`;
-            findings.push({
-              id: findingId,
-              scanner: 'fallback-sast',
-              ruleId: rule.id,
-              title: rule.name,
-              category: rule.category,
-              cwe: rule.cwe,
-              severity: rule.severity,
-              confidence: 'MEDIUM',
-              filePath,
-              startLine: index + 1,
-              endLine: index + 1,
-              codeSnippet: line.trim(),
-              evidence: line.trim(),
-              message: rule.description,
-              remediation: rule.remediation,
-              fingerprint: crypto.createHash('sha256').update(`${rule.id}:${filePath}:${index + 1}`).digest('hex'),
-              status: 'DETECTED',
-              createdAt: new Date().toISOString()
-            });
-          }
+    for (const lineObj of lines) {
+      if (lineObj.isFullComment || !lineObj.codeWithoutComments) continue;
+      const code = lineObj.codeWithoutComments;
+      const lineNum = lineObj.line;
+      const evidence = lineObj.original.trim();
+
+      // SQL Injection
+      if (syntaxAwareScanner.checkSqlInjection(code, content)) {
+        findings.push({
+          id: `find_${crypto.randomBytes(6).toString('hex')}`,
+          scanner: 'fallback-sast',
+          ruleId: 'VULN-001',
+          title: 'SQL Injection Vulnerability',
+          category: 'SQL_INJECTION',
+          cwe: 'CWE-89',
+          severity: 'CRITICAL',
+          confidence: 'HIGH',
+          filePath,
+          startLine: lineNum,
+          endLine: lineNum,
+          codeSnippet: evidence,
+          evidence,
+          message: 'Direct concatenation or interpolation of untrusted input into SQL queries detected.',
+          remediation: 'Use parameterized queries or prepared statements instead of string concatenation.',
+          fingerprint: crypto.createHash('sha256').update(`VULN-001:${filePath}:${lineNum}`).digest('hex'),
+          status: 'DETECTED',
+          createdAt: new Date().toISOString()
         });
+        continue;
+      }
+
+      // Command Injection (CWE-78)
+      if (syntaxAwareScanner.checkCommandInjection(code, content)) {
+        findings.push({
+          id: `find_${crypto.randomBytes(6).toString('hex')}`,
+          scanner: 'fallback-sast',
+          ruleId: 'VULN-002',
+          title: 'Command Injection Vulnerability',
+          category: 'COMMAND_INJECTION',
+          cwe: 'CWE-78',
+          severity: 'CRITICAL',
+          confidence: 'HIGH',
+          filePath,
+          startLine: lineNum,
+          endLine: lineNum,
+          codeSnippet: evidence,
+          evidence,
+          message: 'Unsafe execution of system commands using dynamic input.',
+          remediation: 'Use child_process.execFile with validated arguments, and avoid shell invocation.',
+          fingerprint: crypto.createHash('sha256').update(`VULN-002:${filePath}:${lineNum}`).digest('hex'),
+          status: 'DETECTED',
+          createdAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      // Code Injection (CWE-95)
+      if (syntaxAwareScanner.checkCodeInjection(code)) {
+        findings.push({
+          id: `find_${crypto.randomBytes(6).toString('hex')}`,
+          scanner: 'fallback-sast',
+          ruleId: 'VULN-002',
+          title: 'Code Injection via Dynamic Evaluation',
+          category: 'CODE_INJECTION',
+          cwe: 'CWE-95',
+          severity: 'CRITICAL',
+          confidence: 'HIGH',
+          filePath,
+          startLine: lineNum,
+          endLine: lineNum,
+          codeSnippet: evidence,
+          evidence,
+          message: 'Arbitrary code evaluation using dynamic input passed to eval() or new Function().',
+          remediation: 'Avoid eval() and new Function(); parse structured data with JSON.parse.',
+          fingerprint: crypto.createHash('sha256').update(`VULN-002:${filePath}:${lineNum}`).digest('hex'),
+          status: 'DETECTED',
+          createdAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      // DOM XSS (CWE-79)
+      if (/\b(?:innerHTML|outerHTML)\s*=\s*(?:req\.|props\.|[^'"]*\+)/.test(code) || /dangerouslySetInnerHTML\s*=\s*\{\s*\{\s*__html\s*:/i.test(code)) {
+        findings.push({
+          id: `find_${crypto.randomBytes(6).toString('hex')}`,
+          scanner: 'fallback-sast',
+          ruleId: 'VULN-006',
+          title: 'Cross-Site Scripting (XSS) via Unescaped HTML',
+          category: 'XSS',
+          cwe: 'CWE-79',
+          severity: 'HIGH',
+          confidence: 'HIGH',
+          filePath,
+          startLine: lineNum,
+          endLine: lineNum,
+          codeSnippet: evidence,
+          evidence,
+          message: 'Direct insertion of untrusted data into DOM without sanitization.',
+          remediation: 'Sanitize HTML inputs using DOMPurify or use safe text node APIs.',
+          fingerprint: crypto.createHash('sha256').update(`VULN-006:${filePath}:${lineNum}`).digest('hex'),
+          status: 'DETECTED',
+          createdAt: new Date().toISOString()
+        });
+        continue;
+      }
+
+      // Other security rules (MD5/SHA1 crypto hash, CORS wildcard)
+      for (const rule of this.rules.filter(r => r.pattern)) {
+        if (rule.pattern.test(code)) {
+          findings.push({
+            id: `find_${crypto.randomBytes(6).toString('hex')}`,
+            scanner: 'fallback-sast',
+            ruleId: rule.id,
+            title: rule.name,
+            category: rule.category,
+            cwe: rule.cwe,
+            severity: rule.severity,
+            confidence: 'MEDIUM',
+            filePath,
+            startLine: lineNum,
+            endLine: lineNum,
+            codeSnippet: evidence,
+            evidence,
+            message: rule.description,
+            remediation: rule.remediation,
+            fingerprint: crypto.createHash('sha256').update(`${rule.id}:${filePath}:${lineNum}`).digest('hex'),
+            status: 'DETECTED',
+            createdAt: new Date().toISOString()
+          });
+        }
       }
     }
 

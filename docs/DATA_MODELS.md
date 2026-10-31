@@ -71,7 +71,7 @@ Represents an individual security flaw, code defect, or policy violation detecte
 | `scanner` | String | Yes | No | Tool that identified the finding. | `"semgrep"`, `"eslint"`, `"custom-heuristic"` |
 | `ruleId` | String | Yes | No | Scanner-specific rule identifier. | e.g. `"javascript.express.sqli"` |
 | `title` | String | Yes | No | Concise summary of the security vulnerability. | 1 to 200 characters |
-| `category` | String | Yes | No | Standardized vulnerability category classification. | `"INJECTION"`, `"BROKEN_AUTH"`, `"SENSITIVE_DATA_EXPOSURE"`, `"SECURITY_MISCONFIG"`, `"VULNERABLE_COMPONENTS"`, `"PATH_TRAVERSAL"`, `"OTHER"` |
+| `category` | String | Yes | No | Standardized vulnerability category classification. | `"SQL_INJECTION"`, `"XSS"`, `"HARDCODED_SECRET"`, `"VULNERABLE_DEPENDENCY"`, `"COMMAND_INJECTION"`, `"CODE_INJECTION"`, `"PATH_TRAVERSAL"`, `"INJECTION"`, `"BROKEN_AUTH"`, `"SENSITIVE_DATA_EXPOSURE"`, `"SECURITY_MISCONFIG"`, `"INSECURE_CRYPTO"`, `"OTHER"` |
 | `severity` | String | Yes | No | Severity level of vulnerability. | `"CRITICAL"`, `"HIGH"`, `"MEDIUM"`, `"LOW"`, `"INFO"` |
 | `confidence` | String | Yes | No | Detection confidence score or tier. | `"HIGH"`, `"MEDIUM"`, `"LOW"` |
 | `filePath` | String | Yes | No | Relative file path within repository. | Normalized relative path (no `..`) |
@@ -79,8 +79,11 @@ Represents an individual security flaw, code defect, or policy violation detecte
 | `endLine` | Integer | Yes | No | 1-based end line number in source file. | >= startLine |
 | `message` | String | Yes | No | Descriptive explanation of finding from scanner. | Text |
 | `evidence` | Object | Yes | No | Raw snippet, AST context, and scanner metadata. | `{ codeSnippet: string, rawMatch?: object }` |
-| `fingerprint` | String | Yes | No | SHA-256 hash derived from rule, path, and normalized code for deduplication across scans. | 64-character hex string |
+| `fingerprint` | String | Yes | No | SHA-256 hash derived from rule/category, path, and normalized code for deduplication across scans. | 64-character hex string |
 | `status` | String | Yes | No | Lifecycle remediation status of finding. | See Section 3.2 (`Finding State Machine`) |
+| `isTestFile` | Boolean | No | Yes | Whether finding is located in a test/spec/fixture file. | `true`, `false` (default `false`) |
+| `scope` | String | No | Yes | Scan scope origin of the finding. | `"SOURCE"`, `"TEST"` |
+| `scanners` | Array[String]| No | Yes | Provenance array of scanner engines that corroborated this finding. | e.g. `["semgrep", "pattern-sast"]` |
 | `createdAt` | String | Yes | No | Discovery timestamp. | ISO 8601 UTC |
 
 > **Prototype Divergence Note:** Existing prototype in `ai.service.js` and `verification.service.js` referenced `file` (instead of `filePath`), `cwe` (instead of `category`), `codeSnippet` (now nested inside `evidence.codeSnippet`), and `name` (standardized as `title`).

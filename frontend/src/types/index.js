@@ -108,6 +108,8 @@ export const VULNERABILITY_CATEGORIES = {
   HARDCODED_SECRET: 'Hard-coded Secret',
   VULNERABLE_DEPENDENCY: 'Vulnerable Dependency',
   COMMAND_INJECTION: 'Command Injection',
+  CODE_INJECTION: 'Code Injection',
+  INSECURE_CRYPTO: 'Insecure Cryptography',
   PATH_TRAVERSAL: 'Path Traversal',
   OTHER: 'Other Security Flaw',
 };

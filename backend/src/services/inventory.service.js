@@ -148,6 +148,20 @@ function isBinary(fullPath, ext) {
 }
 
 /**
+ * Determine if a relative file path belongs to a test suite, mock, or fixture.
+ * @param {string} filePath
+ * @returns {boolean}
+ */
+function isTestFile(filePath) {
+  if (!filePath || typeof filePath !== 'string') return false;
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  return (
+    /(?:^|\/)(?:tests?|__tests__|specs?|fixtures?|e2e|cypress)\//i.test(normalized) ||
+    /\.(?:test|spec|cy)\.[a-z0-9]+$/i.test(normalized)
+  );
+}
+
+/**
  * Count lines in a string or buffer safely
  * @param {string} content
  * @returns {number}
@@ -405,12 +419,14 @@ function scanWorkspace(workspacePath, options = {}) {
         const language = LANGUAGE_EXTENSIONS[ext] || 'other';
         languageCounts[language] = (languageCounts[language] || 0) + 1;
 
+        const isTest = isTestFile(relativePath);
         sourceFiles.push({
           path: relativePath,
           extension: ext || '',
           language,
           size: fileSize,
-          lines
+          lines,
+          isTestFile: isTest
         });
 
         totalFiles++;
@@ -544,6 +560,7 @@ module.exports = {
   LANGUAGE_EXTENSIONS,
   MANIFEST_FILENAMES,
   isBinary,
+  isTestFile,
   countLines,
   redactSecrets,
   scanWorkspace,
