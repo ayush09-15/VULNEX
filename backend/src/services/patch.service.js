@@ -113,7 +113,9 @@ class PatchService {
       throw new Error('Patch data must be a non-null object');
     }
 
-    const id = patchData.id || `patch_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const id = (patchData.id && patchData.id.startsWith('patch_'))
+      ? patchData.id
+      : (patchData.id ? patchData.id.replace(/^prop_/, 'patch_') : `patch_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`);
     const findingId = patchData.findingId;
     if (!findingId) {
       throw new Error('Patch entity requires findingId');
