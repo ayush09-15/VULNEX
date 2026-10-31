@@ -62,7 +62,7 @@ describe('Semgrep Service & Process Wrapper', () => {
 
   it('4. should enforce scanner execution timeout', async () => {
     // Test ProcessRunner timeout mechanism directly with sleep command
-    const timeoutResult = await processRunner.run('sleep', ['5'], {
+    const timeoutResult = await processRunner.run(process.execPath, ['-e', 'setTimeout(() => {}, 5000)'], {
       timeoutMs: 150
     });
 
@@ -73,7 +73,7 @@ describe('Semgrep Service & Process Wrapper', () => {
     // Process generating output larger than maxBufferBytes (limit to 100 bytes)
     await assert.rejects(
       async () => {
-        await processRunner.run('yes', ['vulnex_security_payload_line'], {
+        await processRunner.run(process.execPath, ['-e', 'while(true) console.log("vulnex_security_payload_line")'], {
           timeoutMs: 3000,
           maxBufferBytes: 150 // Very small limit for test
         });

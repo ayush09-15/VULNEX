@@ -571,13 +571,16 @@ describe('2. ZIP Slip & Archive Security', () => {
       );
     });
 
-    it('rejects extraction if destination subfolder resolves outside via pre-existing symlink', () => {
-      // Create external folder outside tempDestDir
+    it('rejects extraction if destination subfolder resolves outside via pre-existing symlink', (t) => {
       const outsideDir = createIsolatedTempDir('vulnex-outside-');
       try {
-        // Create symlink inside tempDestDir pointing to outsideDir
         const symlinkPath = path.join(tempDestDir, 'symlink_dir');
-        fs.symlinkSync(outsideDir, symlinkPath, 'dir');
+        try {
+          fs.symlinkSync(outsideDir, symlinkPath, 'dir');
+        } catch (e) {
+          if (t && t.skip) t.skip('Symlinks not supported on host');
+          return;
+        }
 
         const zip = new AdmZip();
         zip.addFile('symlink_dir/pwned.txt', Buffer.from('escape payload'));
@@ -641,6 +644,7 @@ describe('2. ZIP Slip & Archive Security', () => {
 // 3. Path Traversal & Workspace Confinement Tests
 // ----------------------------------------------------------------------------
 describe('3. Path Traversal & Workspace Confinement', () => {
+  let hasSymlink = false;
   let tempWorkspace;
   let outsideDir;
   let sensitiveFileOutside;
@@ -663,7 +667,7 @@ describe('3. Path Traversal & Workspace Confinement', () => {
 
     // Create a symlink INSIDE workspace pointing to file OUTSIDE workspace
     const symlinkTarget = path.join(tempWorkspace, 'src', 'symlinked_secret.env');
-    fs.symlinkSync(sensitiveFileOutside, symlinkTarget);
+    try { fs.symlinkSync(sensitiveFileOutside, symlinkTarget); hasSymlink = true; } catch (e) { /* Windows unprivileged symlink skip */ }
   });
 
   after(() => {
@@ -728,7 +732,8 @@ describe('3. Path Traversal & Workspace Confinement', () => {
       );
     });
 
-    it('rejects reading files outside workspace via symbolic link escape', () => {
+    it('rejects reading files outside workspace via symbolic link escape', (t) => {
+      if (!hasSymlink) { if (t && t.skip) t.skip('Symlinks not supported on host'); return; }
       assert.throws(
         () => getFileExcerpt(tempWorkspace, 'src/symlinked_secret.env', 1, 5),
         (err) => err.message.includes('symbolic link') || err.message.includes('Access denied')
@@ -762,7 +767,8 @@ describe('3. Path Traversal & Workspace Confinement', () => {
       assert.equal(validateWorkspacePath('$HOME/secret.txt', tempWorkspace).valid, false);
     });
 
-    it('rejects diff targeting a symlink pointing outside the workspace', () => {
+    it('rejects diff targeting a symlink pointing outside the workspace', (t) => {
+      if (!hasSymlink) { if (t && t.skip) t.skip('Symlinks not supported on host'); return; }
       const result = validateWorkspacePath('src/symlinked_secret.env', tempWorkspace);
       assert.equal(result.valid, false);
       assert.equal(result.code, 'SYMLINK_WORKSPACE_ESCAPE');
