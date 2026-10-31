@@ -28,7 +28,24 @@ export const SCAN_UI_STATES = Object.freeze({
  */
 export function sanitizeDisplayError(err) {
   if (!err) return 'An unexpected error occurred.';
-  let raw = typeof err === 'string' ? err : (err.message || String(err));
+  let raw = '';
+  if (typeof err === 'string') {
+    raw = err;
+  } else if (typeof err === 'object' && err !== null) {
+    if (typeof err.error === 'string') {
+      raw = err.error;
+    } else if (typeof err.message === 'string') {
+      raw = err.message;
+    } else if (err.error && typeof err.error === 'object' && typeof err.error.message === 'string') {
+      raw = err.error.message;
+    } else {
+      raw = typeof err.toString === 'function' && err.toString() !== '[object Object]'
+        ? err.toString()
+        : JSON.stringify(err);
+    }
+  } else {
+    raw = String(err);
+  }
 
   // 1. Strip stack traces (lines starting with 'at ...' or containing stack traces)
   let primaryLine = raw.split(/\r?\n/)[0] || '';
@@ -129,21 +146,41 @@ export function formatScannerStatusList(scanRecord) {
   if (!scanRecord || typeof scanRecord !== 'object') return [];
 
   const summary = scanRecord.summary || {};
-  const scannersRun = summary.scannersRun || [];
-  const scannersFailed = summary.scannersFailed || [];
-  const scannerErrors = summary.errors || [];
+  const rawScannersRun = Array.isArray(summary.scannersRun) ? summary.scannersRun : [];
+  const rawScannersFailed = Array.isArray(summary.scannersFailed) ? summary.scannersFailed : [];
+  const scannerErrors = Array.isArray(summary.errors) ? summary.errors : [];
   const toolVersions = scanRecord.toolVersions || scanRecord.scan?.toolVersions || {};
 
+  // Build normalized failed scanner mapping: string name -> error message string
+  const failedScannerMap = new Map();
+  for (const item of rawScannersFailed) {
+    if (!item) continue;
+    if (typeof item === 'object') {
+      const name = item.scanner ? String(item.scanner) : 'unknown';
+      const err = item.error ? sanitizeDisplayError(item.error) : 'Scanner execution failed';
+      failedScannerMap.set(name, err);
+    } else {
+      failedScannerMap.set(String(item), null);
+    }
+  }
+
+  // Build normalized run scanner set of string names
+  const runScannerSet = new Set(
+    rawScannersRun.map((s) => (typeof s === 'object' && s !== null ? String(s.scanner || '') : String(s))).filter(Boolean)
+  );
+
   const allScanners = new Set([
-    ...scannersRun,
-    ...scannersFailed,
-    ...Object.keys(toolVersions)
+    ...runScannerSet,
+    ...failedScannerMap.keys(),
+    ...Object.keys(toolVersions),
   ]);
 
   // If no scanners listed, fallback to events
   if (allScanners.size === 0 && Array.isArray(scanRecord.events)) {
     for (const evt of scanRecord.events) {
-      if (evt.stage) allScanners.add(evt.stage.toLowerCase());
+      if (evt.stage && typeof evt.stage === 'string') {
+        allScanners.add(evt.stage.toLowerCase());
+      }
     }
   }
 
@@ -152,28 +189,40 @@ export function formatScannerStatusList(scanRecord) {
     'npm-audit': 'npm Dependency Audit',
     patterns: 'Deterministic Pattern Engine',
     deterministic: 'Deterministic Pattern Engine',
+    'pattern-sast': 'Deterministic Pattern Engine',
   };
 
   const list = [];
   let errIndex = 0;
 
-  for (const scanner of allScanners) {
-    const isFailed = scannersFailed.includes(scanner);
-    const isSuccess = scannersRun.includes(scanner);
+  for (const rawScanner of allScanners) {
+    const scanner = typeof rawScanner === 'object' && rawScanner !== null
+      ? String(rawScanner.scanner || 'unknown')
+      : String(rawScanner);
+
+    const isFailed = failedScannerMap.has(scanner);
+    const isSuccess = runScannerSet.has(scanner);
     const version = toolVersions[scanner] || null;
 
     let scannerErr = null;
     if (isFailed) {
-      scannerErr = scannerErrors[errIndex] ? sanitizeDisplayError(scannerErrors[errIndex]) : 'Scanner execution failed';
-      errIndex++;
+      const recordedErr = failedScannerMap.get(scanner);
+      if (recordedErr) {
+        scannerErr = recordedErr;
+      } else if (scannerErrors[errIndex]) {
+        scannerErr = sanitizeDisplayError(scannerErrors[errIndex]);
+        errIndex++;
+      } else {
+        scannerErr = 'Scanner execution failed';
+      }
     }
 
     list.push({
       name: scanner,
-      label: SCANNER_LABELS[scanner] || scanner,
+      label: SCANNER_LABELS[scanner] || (scanner ? scanner.toUpperCase() : 'Scanner'),
       status: isFailed ? 'FAILED' : (isSuccess ? 'SUCCESS' : 'SKIPPED'),
-      error: scannerErr,
-      version: typeof version === 'string' ? version : null
+      error: scannerErr ? String(scannerErr) : null,
+      version: typeof version === 'string' ? version : null,
     });
   }
 

@@ -299,4 +299,46 @@ test('Asynchronous Scan State & Truthful UI Contract (Commit 44)', async (t) => 
     assert.equal(emptyMetrics.totalFindings, 0);
     assert.equal(emptyMetrics.durationMs, null);
   });
+
+  await t.test('11. Object scannersFailed handling: renders cleanly when scannersFailed contains objects { scanner, error }', () => {
+    const scanRecordWithObjectErrors = {
+      id: 'scan_with_object_errors',
+      status: 'PARTIAL',
+      summary: {
+        totalFindings: 3,
+        scannersRun: ['deterministic'],
+        scannersFailed: [
+          { scanner: 'semgrep', error: 'Semgrep CLI binary not detected on PATH' },
+          { scanner: 'npm-audit', error: 'npm audit returned exit code 1' }
+        ],
+        bySeverity: { CRITICAL: 1, HIGH: 2, MEDIUM: 0, LOW: 0, INFO: 0 },
+      },
+    };
+
+    // 1. Check formatted scanner list has string labels and errors, never objects
+    const scannerList = formatScannerStatusList(scanRecordWithObjectErrors);
+    assert.equal(scannerList.length, 3);
+    for (const item of scannerList) {
+      assert.equal(typeof item.name, 'string', 'name must be string');
+      assert.equal(typeof item.label, 'string', 'label must be string');
+      if (item.error) {
+        assert.equal(typeof item.error, 'string', 'error must be string');
+      }
+    }
+
+    // 2. Render to static markup - must NOT throw React child exception
+    const html = renderToStaticMarkup(
+      h(ScanStateView, {
+        scanRecord: scanRecordWithObjectErrors,
+        onRetry: () => {},
+        onViewFindings: () => {},
+      })
+    );
+
+    assert.ok(html.includes('Semgrep SAST'), 'Must render Semgrep label');
+    assert.ok(html.includes('Semgrep CLI binary not detected on PATH'), 'Must render Semgrep error string');
+    assert.ok(html.includes('npm Dependency Audit'), 'Must render npm audit label');
+    assert.ok(html.includes('Deterministic Pattern Engine'), 'Must render deterministic engine');
+    assert.ok(!html.includes('[object Object]'), 'Must never render [object Object]');
+  });
 });
