@@ -19,7 +19,8 @@ const {
 class AIService {
   constructor() {
     this.apiKey = process.env.GEMINI_API_KEY || process.env.OPENAI_API_KEY || '';
-    this.model = process.env.GEMINI_MODEL || 'gemini-1.5-pro';
+    this.model = process.env.GEMMA_MODEL || process.env.GEMINI_MODEL || 'gemma-2-9b-it';
+    this.timeoutMs = parseInt(process.env.AI_TIMEOUT_MS, 10) || 15000;
     this.promptVersion = PROMPT_VERSION;
   }
 
@@ -234,34 +235,67 @@ class AIService {
     const promptPayload = this.buildInvestigationPrompt(finding, codeContext);
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: promptPayload.systemInstruction }]
-        },
-        contents: [
-          {
-            parts: [{ text: promptPayload.userPrompt }]
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+
+    try {
+      const isGeminiModel = this.model.toLowerCase().includes('gemini');
+      const requestBody = isGeminiModel
+        ? {
+            systemInstruction: {
+              parts: [{ text: promptPayload.systemInstruction }]
+            },
+            contents: [
+              {
+                parts: [{ text: promptPayload.userPrompt }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              responseMimeType: 'application/json'
+            }
           }
-        ],
-        generationConfig: {
-          temperature: 0.1,
-          responseMimeType: 'application/json'
-        }
-      })
-    });
+        : {
+            // Google Gemma model format: unified instruction and untrusted data boundary
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `${promptPayload.systemInstruction}\n\n${promptPayload.userPrompt}` }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.1
+            }
+          };
 
-    const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
 
-    const processed = this.processInvestigationResponse(text, finding);
-    return {
-      ...processed,
-      promptVersion: promptPayload.promptVersion,
-      contextSupplied: promptPayload.contextSupplied
-    };
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => ({}));
+        throw new Error(`Google AI Studio error (${res.status}): ${errorBody?.error?.message || res.statusText}`);
+      }
+
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+
+      const processed = this.processInvestigationResponse(text, finding);
+      return {
+        ...processed,
+        modelUsed: this.model,
+        promptVersion: promptPayload.promptVersion,
+        contextSupplied: promptPayload.contextSupplied
+      };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
   }
 
   async _callGeminiPatch(finding, originalCode) {
@@ -273,23 +307,39 @@ ${originalCode || finding.codeSnippet}
 
 Provide the patched code and explanation.`;
 
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }]
-      })
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
 
-    const data = await res.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return {
-      findingId: finding.id,
-      modelUsed: this.model,
-      patchedCode: text,
-      explanation: 'AI-generated fix via ' + this.model,
-      generatedAt: new Date().toISOString()
-    };
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (!res.ok) {
+        const errorBody = await res.json().catch(() => ({}));
+        throw new Error(`Google AI Studio error (${res.status}): ${errorBody?.error?.message || res.statusText}`);
+      }
+
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      return {
+        findingId: finding.id,
+        modelUsed: this.model,
+        patchedCode: text,
+        explanation: 'AI-generated fix via ' + this.model,
+        generatedAt: new Date().toISOString()
+      };
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
   }
 }
 
