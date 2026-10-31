@@ -262,9 +262,49 @@ function extractZipArchive(zipInput, destinationDir, options = {}) {
   };
 }
 
+/**
+ * Ingest, validate, and safely extract a ZIP archive into a bounded workspace.
+ * Returns canonical repository metadata linking to the extracted workspace.
+ *
+ * @param {Buffer|string} zipInput - ZIP buffer or file path
+ * @param {Object} [options={}] - Ingestion options
+ * @returns {{ repository: Object, extractedCount: number, targetDir: string, totalBytes: number }}
+ */
+function ingestZipArchive(zipInput, options = {}) {
+  const crypto = require('crypto');
+  const repoId = `repo_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const workspaceRoot = config.workspaceRoot || './.workspaces';
+  const targetDir = path.resolve(workspaceRoot, `ws_zip_${repoId}`);
+
+  const extractResult = extractZipArchive(zipInput, targetDir, options);
+
+  const cleanDisplayName = (options.displayName || 'uploaded-archive')
+    .replace(/[/\\~]/g, '')
+    .trim() || 'uploaded-archive';
+
+  const repository = {
+    id: repoId,
+    sourceType: 'ZIP_UPLOAD',
+    displayName: cleanDisplayName,
+    sanitizedSourceUrl: null,
+    defaultRef: options.defaultRef || 'main',
+    createdAt: new Date().toISOString(),
+    ownerId: options.ownerId || null,
+    workspacePath: targetDir
+  };
+
+  return {
+    repository,
+    extractedCount: extractResult.extractedCount,
+    targetDir: extractResult.targetDir,
+    totalBytes: extractResult.totalBytes
+  };
+}
+
 module.exports = {
   validateZipArchive,
   extractZipArchive,
+  ingestZipArchive,
   DEFAULT_MAX_ENTRIES,
   DEFAULT_MAX_UNCOMPRESSED_BYTES,
   DEFAULT_MAX_FILE_BYTES
