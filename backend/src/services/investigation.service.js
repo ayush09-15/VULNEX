@@ -227,7 +227,6 @@ class InvestigationService {
 
 const investigationService = new InvestigationService();
 
-module.exports = {
-  InvestigationService,
-  investigationService
-};
+module.exports = investigationService;
+module.exports.investigationService = investigationService;
+module.exports.InvestigationService = InvestigationService;

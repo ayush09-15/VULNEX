@@ -295,7 +295,7 @@ const VerificationComparisonSchema = z.object({
   astDifferenceVerified: z.boolean().default(false),
   regressionDetected: z.boolean().default(false),
   matchedFingerprint: z.string().optional(),
-  comparisonOutcome: z.enum(['RESOLVED', 'STILL_DETECTED', 'AMBIGUOUS', 'INTRODUCED_NEW_DEFECT']).default('RESOLVED')
+  comparisonOutcome: z.enum(['RESOLVED', 'STILL_DETECTED', 'AMBIGUOUS', 'INTRODUCED_NEW_DEFECT', 'REGRESSION_DETECTED']).default('RESOLVED')
 });
 
 const VerificationSchema = z.object({

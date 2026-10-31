@@ -4,6 +4,7 @@ const apiResponse = require('../utils/apiResponse');
 const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
 const { validateCreateScan } = require('../validators/canonical.schema');
 const repositoryService = require('../services/repository.service');
+const reportService = require('../services/report.service');
 
 /**
  * ============================================================================
@@ -167,6 +168,26 @@ router.get('/:id/findings', (req, res) => {
       code: 'INTERNAL_SERVER_ERROR',
       message: err.message
     }, 500);
+  }
+});
+
+/**
+ * GET /api/scans/:id/report
+ * Retrieve consolidated, evidence-backed security scan report (Commit 41)
+ * Acceptance Gate: Tools, findings, AI, patch and checks.
+ */
+router.get('/:id/report', (req, res) => {
+  try {
+    const report = reportService.generateScanReport(req.params.id, {
+      format: req.query.format || 'json'
+    });
+    return apiResponse.success(res, report, 200);
+  } catch (err) {
+    const statusCode = err.statusCode || (err.code === 'RESOURCE_NOT_FOUND' ? 404 : 500);
+    return apiResponse.error(res, {
+      code: err.code || 'REPORT_GENERATION_FAILED',
+      message: err.message
+    }, statusCode);
   }
 });
 

@@ -96,6 +96,22 @@ class VerificationService {
   }
 
   /**
+   * Save and index a verification record (intake / test helper)
+   * @param {Object} verificationRecord
+   * @returns {Object}
+   */
+  saveVerification(verificationRecord) {
+    if (!verificationRecord || !verificationRecord.id) {
+      throw new Error('Verification record must have an id');
+    }
+    verificationsStore.set(verificationRecord.id, verificationRecord);
+    if (verificationRecord.patchId) {
+      verificationsStore.set(verificationRecord.patchId, verificationRecord);
+    }
+    return verificationRecord;
+  }
+
+  /**
    * Execute post-patch scanner against disposable workspace (Commit 38)
    * Captures tool version, command, exit code, and raw output.
    *
@@ -144,6 +160,7 @@ class VerificationService {
 
       // Re-scan using scannerService content analysis
       const postScanFindings = scannerService.scanContent(fileContent, targetRelPath);
+      scannerResult.postScanFindings = postScanFindings;
       scannerResult.rawOutput = JSON.stringify({
         scanner: tool,
         toolVersion: resolvedToolVersion,
@@ -157,34 +174,106 @@ class VerificationService {
         }))
       }, null, 2);
 
-      // Determine if original vulnerability is still present
-      const stillPresent = postScanFindings.some(f =>
-        f.ruleId === scannerResult.ruleId ||
-        (targetFinding?.ruleId && f.ruleId === targetFinding.ruleId) ||
-        (targetFinding?.cwe && f.cwe === targetFinding.cwe)
-      );
+      // Perform before-and-after fingerprint comparison (Commit 39)
+      const comparison = this.compareFindingFingerprints({
+        targetFinding,
+        targetRuleId: targetRuleId || scannerResult.ruleId,
+        postScanFindings,
+        targetFilePath: targetRelPath
+      });
 
-      scannerResult.originalFindingResolved = !stillPresent;
+      scannerResult.comparison = comparison;
+      scannerResult.originalFindingResolved = comparison.originalFindingResolved;
+      scannerResult.ambiguousMatch = comparison.isAmbiguous;
+      scannerResult.newFindingsCount = comparison.newDefectFindings.length;
+      scannerResult.newFindings = comparison.newDefectFindings;
 
-      const newFindings = postScanFindings.filter(f =>
-        f.ruleId !== scannerResult.ruleId &&
-        (!targetFinding?.ruleId || f.ruleId !== targetFinding.ruleId) &&
-        (!targetFinding?.cwe || f.cwe !== targetFinding.cwe)
-      );
-
-      scannerResult.newFindingsCount = newFindings.length;
-      scannerResult.newFindings = newFindings;
-
-      // Exit code 0 if original finding resolved and no regressions, else 1
-      scannerResult.exitCode = (stillPresent || newFindings.length > 0) ? 1 : 0;
+      // Exit code 0 if original finding resolved, not ambiguous, and no regressions
+      scannerResult.exitCode = (comparison.originalFindingResolved && !comparison.isAmbiguous && !comparison.regressionDetected) ? 0 : 1;
     } catch (err) {
       scannerResult.exitCode = 1;
       scannerResult.rawOutput = err.message;
       scannerResult.originalFindingResolved = false;
+      scannerResult.ambiguousMatch = false;
+      scannerResult.postScanFindings = [];
     }
 
     scannerResult.durationMs = Math.max(1, Date.now() - start);
     return scannerResult;
+  }
+
+  /**
+   * Compare before-and-after finding fingerprints (Commit 39)
+   * Acceptance Gate: Ambiguous matching becomes INCONCLUSIVE.
+   *
+   * @param {Object} params
+   * @param {Object} params.targetFinding
+   * @param {Array<Object>} params.postScanFindings
+   * @param {string} params.targetFilePath
+   * @returns {Object}
+   */
+  compareFindingFingerprints({ targetFinding, targetRuleId, postScanFindings = [], targetFilePath = '' }) {
+    const normTarget = String(targetFilePath || targetFinding?.filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+    const targetRule = targetFinding?.ruleId || targetRuleId || 'generic.rule';
+
+    const computeFingerprint = (f) => {
+      if (f.fingerprint) return f.fingerprint;
+      const cleanPath = String(f.filePath || normTarget).replace(/\\/g, '/').replace(/^\/+/, '');
+      const evidence = (f.evidence || f.codeSnippet || f.description || f.message || '').trim().replace(/\s+/g, ' ');
+      return crypto.createHash('sha256').update(`${f.ruleId || targetRule}:${cleanPath}:${evidence}`).digest('hex');
+    };
+
+    const targetFingerprint = targetFinding?.fingerprint || computeFingerprint({
+      ruleId: targetRule,
+      filePath: normTarget,
+      evidence: targetFinding?.evidence || targetFinding?.codeSnippet || ''
+    });
+
+    const matchedRuleFindings = postScanFindings.filter(f => {
+      const fPath = String(f.filePath || '').replace(/\\/g, '/').replace(/^\/+/, '');
+      const isPathMatch = !fPath || fPath === normTarget || normTarget.endsWith(fPath) || fPath.endsWith(normTarget);
+      const isRuleMatch = f.ruleId === targetRule || (targetFinding?.cwe && f.cwe === targetFinding.cwe);
+      return isRuleMatch && isPathMatch;
+    });
+
+    const newDefectFindings = postScanFindings.filter(f => {
+      return f.ruleId !== targetRule && (!targetFinding?.cwe || f.cwe !== targetFinding.cwe);
+    });
+
+    const exactFingerprintMatch = matchedRuleFindings.find(f => computeFingerprint(f) === targetFingerprint);
+    const isAmbiguous = (matchedRuleFindings.length > 1 && !exactFingerprintMatch) ||
+      (matchedRuleFindings.length > 1 && matchedRuleFindings.filter(f => computeFingerprint(f) === targetFingerprint).length > 1) ||
+      Boolean(targetFinding?.ambiguousMatch);
+
+    let comparisonOutcome = 'RESOLVED';
+    let originalFindingResolved = true;
+    let matchedFingerprint = null;
+
+    if (isAmbiguous) {
+      comparisonOutcome = 'AMBIGUOUS';
+      originalFindingResolved = false;
+    } else if (exactFingerprintMatch || matchedRuleFindings.length > 0) {
+      comparisonOutcome = 'STILL_DETECTED';
+      originalFindingResolved = false;
+      matchedFingerprint = exactFingerprintMatch ? computeFingerprint(exactFingerprintMatch) : computeFingerprint(matchedRuleFindings[0]);
+    } else if (newDefectFindings.length > 0) {
+      comparisonOutcome = 'REGRESSION_DETECTED';
+      originalFindingResolved = true;
+    } else {
+      comparisonOutcome = 'RESOLVED';
+      originalFindingResolved = true;
+    }
+
+    return {
+      targetFingerprint,
+      matchedFingerprint,
+      matchedRuleFindings,
+      newDefectFindings,
+      isAmbiguous,
+      comparisonOutcome,
+      originalFindingResolved,
+      regressionDetected: newDefectFindings.length > 0
+    };
   }
 
   /**
@@ -302,14 +391,42 @@ class VerificationService {
       targetFinding: finding
     });
 
-    // 8. Before/After Comparison & Overall Status Determination
-    const hasRegression = scannerResults.newFindingsCount > 0;
-    const isVerified = Boolean(testResults.testsPassed && scannerResults.originalFindingResolved && !hasRegression);
-    const finalVerificationStatus = isVerified ? 'PASSED' : 'FAILED';
-    const finalPatchStatus = isVerified ? 'VERIFIED' : 'FAILED';
-    const finalFindingStatus = isVerified ? 'VERIFIED' : 'FAILED';
+    // 8. Before/After Comparison & Overall Status Determination (Commit 39)
+    const comparison = scannerResults.comparison || this.compareFindingFingerprints({
+      targetFinding: finding,
+      postScanFindings: scannerResults.postScanFindings || [],
+      targetFilePath: targetFile
+    });
 
-    // 9. Update Patch State Machine (TESTING -> VERIFIED / FAILED)
+    const hasRegression = comparison.regressionDetected || scannerResults.newFindingsCount > 0;
+    let finalVerificationStatus;
+    let finalPatchStatus;
+    let finalFindingStatus;
+    let isVerified = false;
+
+    if (comparison.isAmbiguous) {
+      finalVerificationStatus = 'INCONCLUSIVE';
+      finalPatchStatus = 'INCONCLUSIVE';
+      finalFindingStatus = 'INCONCLUSIVE';
+      isVerified = false;
+    } else if (!testResults.testsPassed) {
+      finalVerificationStatus = 'FAILED';
+      finalPatchStatus = 'FAILED';
+      finalFindingStatus = 'FAILED';
+      isVerified = false;
+    } else if (!comparison.originalFindingResolved || hasRegression) {
+      finalVerificationStatus = 'FAILED';
+      finalPatchStatus = 'FAILED';
+      finalFindingStatus = 'FAILED';
+      isVerified = false;
+    } else {
+      finalVerificationStatus = 'PASSED';
+      finalPatchStatus = 'VERIFIED';
+      finalFindingStatus = 'VERIFIED';
+      isVerified = true;
+    }
+
+    // 9. Update Patch State Machine (TESTING -> VERIFIED / FAILED / INCONCLUSIVE)
     const updatedPatch = {
       ...patch,
       status: finalPatchStatus,
@@ -318,7 +435,7 @@ class VerificationService {
     };
     patchService.savePatch(updatedPatch);
 
-    // 10. Update Finding State Machine (PATCH_APPLIED -> VERIFIED / FAILED)
+    // 10. Update Finding State Machine (PATCH_APPLIED -> VERIFIED / FAILED / INCONCLUSIVE)
     if (finding) {
       const updatedFinding = {
         ...finding,
@@ -331,11 +448,12 @@ class VerificationService {
     }
 
     // 11. Log Audit Event: Verification Completed
+    const auditOutcome = isVerified ? 'SUCCESS' : (finalVerificationStatus === 'INCONCLUSIVE' ? 'INCONCLUSIVE' : 'FAILURE');
     this.logAuditEvent({
       actor,
       action: 'PATCH_VERIFICATION_COMPLETED',
       entityId: patch.id,
-      outcome: isVerified ? 'SUCCESS' : 'FAILURE',
+      outcome: auditOutcome,
       requestId
     });
 
@@ -347,6 +465,9 @@ class VerificationService {
       appliedWorkspaceId: patch.appliedWorkspaceId,
       testResults: {
         syntaxValid: testResults.syntaxValid !== false,
+        testsExecuted: testResults.testsExecuted !== undefined ? testResults.testsExecuted : (testResults.testsPassed ? 1 : 0),
+        passed: testResults.passed !== undefined ? testResults.passed : (testResults.testsPassed ? 1 : 0),
+        failed: testResults.failed !== undefined ? testResults.failed : (testResults.testsPassed === false ? 1 : 0),
         testsPassed: testResults.testsPassed,
         exitCode: testResults.exitCode,
         stdout: testResults.stdout || '',
@@ -369,7 +490,8 @@ class VerificationService {
       beforeAfterComparison: {
         astDifferenceVerified: true,
         regressionDetected: hasRegression,
-        comparisonOutcome: isVerified ? 'RESOLVED' : (!scannerResults.originalFindingResolved ? 'STILL_DETECTED' : 'REGRESSION_DETECTED')
+        matchedFingerprint: comparison.matchedFingerprint || undefined,
+        comparisonOutcome: comparison.comparisonOutcome
       },
       logsReference: null,
       createdAt: new Date().toISOString()

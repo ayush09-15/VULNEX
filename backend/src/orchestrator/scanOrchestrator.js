@@ -874,6 +874,19 @@ class ScanOrchestrator {
   }
 
   /**
+   * Register or add a scan directly into store (intake / test helper)
+   * @param {Object} scanRecord
+   * @returns {Object}
+   */
+  addScan(scanRecord) {
+    if (!scanRecord || !scanRecord.id) {
+      throw new Error('Scan record must have an id');
+    }
+    scansStore.set(scanRecord.id, scanRecord);
+    return scanRecord;
+  }
+
+  /**
    * Register or add a finding directly into store (intake / test helper)
    * @param {Object} finding
    * @returns {Object}
