@@ -141,6 +141,9 @@ class PatchService {
       reviewedAt: patchData.reviewedAt || null,
       reviewComments: patchData.reviewComments || null,
       appliedAt: patchData.appliedAt || null,
+      isVerified: patchData.isVerified !== undefined ? patchData.isVerified : (status === 'VERIFIED'),
+      verifiedAt: patchData.verifiedAt || null,
+      verificationId: patchData.verificationId || null,
       createdAt: patchData.createdAt || new Date().toISOString(),
       updatedAt: patchData.updatedAt || new Date().toISOString(),
       metadata: {

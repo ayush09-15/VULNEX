@@ -12,12 +12,15 @@
  *   * POST /api/patches/:id/rollback - Rollback patch in disposable workspace
  *   * POST /api/patches/:id/verify - Verify patch inside disposable workspace
  * - Commit 34 Gate: "No apply without explicit confirmation and valid state."
+ * - Commit 37 Gate: "State transition and audit event tests"
+ * - Commit 38 Gate: "Tool version, command, exit code and output"
  */
 
 const express = require('express');
 const router = express.Router();
 const apiResponse = require('../utils/apiResponse');
 const patchService = require('../services/patch.service');
+const verificationService = require('../services/verification.service');
 
 // ----------------------------------------------------------------------------
 // GET /api/patches - List patches with optional filters
@@ -132,8 +135,7 @@ router.post('/:id/apply', async (req, res) => {
     // 1. Explicit Human Approval Confirmation Gate
     const isApproved = (approved === true) || (confirm === true);
     if (!isApproved) {
-      // If approved was explicitly passed as false or omitted in standard contract
-      const statusCode = (req.body && 'approved' in req.body) ? 403 : 400;
+      const statusCode = (req.body && req.body.approved === false) ? 403 : 400;
       const code = statusCode === 403 ? 'APPROVAL_REQUIRED' : 'CONFIRMATION_REQUIRED';
       return apiResponse.error(res, {
         code,
@@ -220,44 +222,36 @@ router.post('/:id/rollback', async (req, res) => {
 router.post('/:id/verify', async (req, res) => {
   try {
     const patchId = req.params.id;
-    const patch = patchService.getPatchById(patchId);
+    const { testFile, command, options } = req.body || {};
+    const requestId = req.id || req.headers?.['x-request-id'] || 'req_verify';
 
-    if (!patch) {
-      return apiResponse.error(res, {
-        code: 'RESOURCE_NOT_FOUND',
-        message: `Patch with ID '${patchId}' does not exist.`
-      }, 404);
-    }
+    const result = await verificationService.verifyPatch({
+      patchId,
+      testFile,
+      command,
+      requestId,
+      actor: req.user?.id || 'security_operator',
+      ...options
+    });
 
-    if (patch.status !== 'APPLIED_TO_TEMP') {
+    return apiResponse.success(res, result.verification || result, 200);
+  } catch (err) {
+    if (err.name === 'InvalidStateTransitionError' || err.code === 'INVALID_STATE_TRANSITION' || err.statusCode === 409) {
       return apiResponse.error(res, {
         code: 'INVALID_STATE_TRANSITION',
-        message: `Patch must be in 'APPLIED_TO_TEMP' state before running verification. Current: '${patch.status}'`
+        message: err.message
       }, 409);
     }
-
-    const verificationResult = {
-      patchId: patch.id,
-      status: 'PASSED',
-      appliedWorkspaceId: patch.appliedWorkspaceId,
-      testResults: {
-        syntaxValid: true,
-        testsPassed: true,
-        exitCode: 0
-      },
-      rescanResults: {
-        vulnerabilityDetected: false,
-        ruleRemediated: true
-      },
-      verifiedAt: new Date().toISOString()
-    };
-
-    return apiResponse.success(res, verificationResult, 200);
-  } catch (err) {
+    if (err.name === 'PatchNotFoundError' || err.code === 'PATCH_NOT_FOUND' || err.code === 'RESOURCE_NOT_FOUND' || err.statusCode === 404) {
+      return apiResponse.error(res, {
+        code: 'RESOURCE_NOT_FOUND',
+        message: err.message
+      }, 404);
+    }
     return apiResponse.error(res, {
       code: 'PATCH_VERIFICATION_FAILED',
       message: err.message || 'Failed to verify patch.'
-    }, 500);
+    }, err.statusCode || 500);
   }
 });
 
