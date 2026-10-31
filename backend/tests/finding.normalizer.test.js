@@ -16,10 +16,10 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
   const sqliXssJson = fs.readFileSync(path.join(fixturesDir, 'semgrep-sqli-xss.json'), 'utf8');
 
   // --------------------------------------------------------------------------
-  // 1. Valid Findings from Semgrep Parser Output
+  // 1. Valid Findings Normalization from Semgrep Parser Output
   // --------------------------------------------------------------------------
   describe('1. Valid Findings Normalization from Semgrep Parser Output', () => {
-    it('should normalize Semgrep parser output object into Common Finding Schema', () => {
+    it('should normalize Semgrep parser output object into Common Finding Schema with fingerprints', () => {
       const parseResult = semgrepParser.parse(multipleFindingsJson, {
         workspacePath: '/Users/host/project'
       });
@@ -32,9 +32,11 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.strictEqual(normalizedResult.errors.length, 0);
       assert.strictEqual(normalizedResult.metadata.total, 3);
       assert.strictEqual(normalizedResult.metadata.valid, 3);
+      assert.strictEqual(normalizedResult.metadata.duplicates, 0);
+      assert.strictEqual(normalizedResult.metadata.unique, 3);
       assert.strictEqual(normalizedResult.metadata.invalid, 0);
 
-      // Verify each finding has all 8 required normalized fields
+      // Verify each finding has all required normalized fields including fingerprint
       normalizedResult.findings.forEach((finding) => {
         assert.ok(typeof finding.rule === 'string' && finding.rule.length > 0, 'rule must be a non-empty string');
         assert.ok(typeof finding.path === 'string' && finding.path.length > 0, 'path must be a non-empty string');
@@ -44,6 +46,11 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
         assert.ok(finding.evidence !== undefined && finding.evidence !== null, 'evidence must be defined');
         assert.ok(['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'].includes(finding.severity), 'severity must be valid enum');
         assert.ok(['HIGH', 'MEDIUM', 'LOW', 'UNKNOWN'].includes(finding.confidence), 'confidence must be valid enum');
+
+        // Verify deterministic 64-char SHA-256 fingerprint
+        assert.ok(typeof finding.fingerprint === 'string', 'fingerprint must be a string');
+        assert.strictEqual(finding.fingerprint.length, 64, 'fingerprint must be 64-char hex string');
+        assert.match(finding.fingerprint, /^[a-f0-9]{64}$/, 'fingerprint must be valid lowercase sha256 hex');
 
         // Validate individual record with CommonFindingSchema
         const validation = validateCommonFinding(finding);
@@ -73,6 +80,7 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.ok(sqli.evidence.includes('SELECT id, username'));
       assert.strictEqual(sqli.severity, 'HIGH');
       assert.strictEqual(sqli.confidence, 'HIGH');
+      assert.ok(sqli.fingerprint && sqli.fingerprint.length === 64);
 
       const xss = normalizedResult.findings.find(f => f.rule.includes('raw-html-format'));
       assert.ok(xss, 'XSS finding must be present');
@@ -82,6 +90,7 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.ok(xss.evidence.includes('send(htmlResponse)'));
       assert.strictEqual(xss.severity, 'MEDIUM');
       assert.strictEqual(xss.confidence, 'MEDIUM');
+      assert.ok(xss.fingerprint && xss.fingerprint.length === 64);
     });
 
     it('should normalize array of findings directly', () => {
@@ -120,6 +129,7 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.strictEqual(result.data.severity, 'HIGH');
       assert.strictEqual(result.data.confidence, 'HIGH');
       assert.strictEqual(result.data.evidence, 'eval(userInput);');
+      assert.ok(result.data.fingerprint && result.data.fingerprint.length === 64);
       assert.deepStrictEqual(result.data.metadata.cwe, ['CWE-95']);
     });
   });
@@ -152,6 +162,7 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.strictEqual(f.startCol, null);
       assert.strictEqual(f.endCol, null);
       assert.strictEqual(f.codeSnippet, null);
+      assert.ok(f.fingerprint && f.fingerprint.length === 64, 'fingerprint must be generated even without evidence');
     });
 
     it('should handle record with empty metadata or empty strings safely', () => {
@@ -170,6 +181,7 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.strictEqual(result.success, true);
       assert.strictEqual(result.data.startLine, 1);
       assert.strictEqual(result.data.endLine, 2);
+      assert.ok(result.data.fingerprint && result.data.fingerprint.length === 64);
     });
   });
 
@@ -460,39 +472,267 @@ describe('VULNEX Common Finding Normalizer & Schema', () => {
       assert.strictEqual(f.references[0], 'https://cwe.mitre.org/data/definitions/798.html');
       assert.strictEqual(f.customScannerFlag, true);
       assert.strictEqual(f.executionPass, 1);
+      assert.ok(f.fingerprint && f.fingerprint.length === 64);
     });
   });
 
   // --------------------------------------------------------------------------
-  // 7. Explicit Constraint Check: No Fingerprinting or Deduplication
+  // 7. Stable Fingerprints & Deduplication Invariants (Requirement 10)
   // --------------------------------------------------------------------------
-  describe('7. Verification of Scope Constraints (No Fingerprinting / Deduplication)', () => {
-    it('should NOT deduplicate identical findings in the same batch', () => {
+  describe('7. Stable Fingerprints & Deduplication Invariants', () => {
+    it('1. Same issue produces the same fingerprint across runs', () => {
+      const issueA = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/routes/users.js',
+        startLine: 42,
+        endLine: 42,
+        message: 'Unsafe SQL query interpolation',
+        evidence: 'const q = `SELECT * FROM users WHERE id = ${req.params.id}`;'
+      };
+
+      const issueB = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/routes/users.js',
+        startLine: 42,
+        endLine: 42,
+        message: 'Unsafe SQL query interpolation',
+        evidence: 'const q = `SELECT * FROM users WHERE id = ${req.params.id}`;'
+      };
+
+      const resA = findingNormalizer.normalizeFinding(issueA);
+      const resB = findingNormalizer.normalizeFinding(issueB);
+
+      assert.strictEqual(resA.success, true);
+      assert.strictEqual(resB.success, true);
+      assert.strictEqual(resA.data.fingerprint, resB.data.fingerprint, 'Identical issues must have identical fingerprints');
+    });
+
+    it('2. Different issues produce different fingerprints', () => {
+      const sqliIssue = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/routes/users.js',
+        startLine: 42,
+        evidence: 'db.query(sql);'
+      };
+
+      const xssIssue = {
+        rule: 'javascript.express.security.audit.xss',
+        path: 'src/routes/users.js',
+        startLine: 42,
+        evidence: 'res.send(html);'
+      };
+
+      const resSqli = findingNormalizer.normalizeFinding(sqliIssue);
+      const resXss = findingNormalizer.normalizeFinding(xssIssue);
+
+      assert.notStrictEqual(resSqli.data.fingerprint, resXss.data.fingerprint, 'Different rules must produce different fingerprints');
+    });
+
+    it('3. Line-number changes do not automatically create a new fingerprint', () => {
+      // Line shift caused by unrelated edits (e.g., adding imports or comments above)
+      const findingOriginalLine = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/controllers/order.controller.js',
+        startLine: 25,
+        endLine: 26,
+        message: 'User input formatted into query string',
+        evidence: 'const sql = "SELECT * FROM orders WHERE id = " + id;'
+      };
+
+      const findingShiftedLine = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/controllers/order.controller.js',
+        startLine: 78, // 53 lines lower due to unrelated changes
+        endLine: 79,
+        message: 'User input formatted into query string',
+        evidence: 'const sql = "SELECT * FROM orders WHERE id = " + id;'
+      };
+
+      const res1 = findingNormalizer.normalizeFinding(findingOriginalLine);
+      const res2 = findingNormalizer.normalizeFinding(findingShiftedLine);
+
+      assert.strictEqual(res1.success, true);
+      assert.strictEqual(res2.success, true);
+      assert.strictEqual(
+        res1.data.fingerprint,
+        res2.data.fingerprint,
+        'Fingerprint MUST remain stable when line numbers shift due to unrelated edits'
+      );
+    });
+
+    it('4. Different files produce different fingerprints', () => {
+      const fileA = {
+        rule: 'security.hardcoded-key',
+        path: 'src/auth/token.js',
+        startLine: 10,
+        evidence: 'const secret = "abc1234567890";'
+      };
+
+      const fileB = {
+        rule: 'security.hardcoded-key',
+        path: 'src/config/keys.js',
+        startLine: 10,
+        evidence: 'const secret = "abc1234567890";'
+      };
+
+      const resA = findingNormalizer.normalizeFinding(fileA);
+      const resB = findingNormalizer.normalizeFinding(fileB);
+
+      assert.notStrictEqual(
+        resA.data.fingerprint,
+        resB.data.fingerprint,
+        'Same vulnerability in different files must have different fingerprints'
+      );
+    });
+
+    it('5. Duplicate findings are removed while preserving useful metadata', () => {
+      const originalFinding = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/db.js',
+        startLine: 15,
+        endLine: 15,
+        message: 'SQL injection detected',
+        evidence: 'db.query(sql);',
+        metadata: { scannerVersion: '1.136.0', cwe: ['CWE-89'] },
+        references: ['https://cwe.mitre.org/data/definitions/89.html']
+      };
+
+      const duplicateFinding = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/db.js',
+        startLine: 35, // shifted line
+        endLine: 35,
+        message: 'SQL injection detected',
+        evidence: 'db.query(sql);',
+        metadata: { owasp: ['A03:2021-Injection'] }, // extra metadata
+        references: ['https://owasp.org/Top10/A03_2021-Injection/'] // extra reference
+      };
+
+      const batch = [originalFinding, duplicateFinding];
+      const result = findingNormalizer.normalize(batch);
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.findings.length, 1, 'Duplicate finding must be removed');
+      assert.strictEqual(result.metadata.total, 2);
+      assert.strictEqual(result.metadata.valid, 2);
+      assert.strictEqual(result.metadata.duplicates, 1);
+      assert.strictEqual(result.metadata.unique, 1);
+
+      const merged = result.findings[0];
+      assert.strictEqual(merged.duplicateCount, 2, 'Must record occurrence count');
+
+      // Verify metadata was merged
+      assert.ok(merged.metadata.cwe, 'Original metadata preserved');
+      assert.ok(merged.metadata.owasp, 'Duplicate metadata merged');
+
+      // Verify references were merged without duplicates
+      assert.strictEqual(merged.references.length, 2, 'References must be combined');
+      assert.ok(merged.references.includes('https://cwe.mitre.org/data/definitions/89.html'));
+      assert.ok(merged.references.includes('https://owasp.org/Top10/A03_2021-Injection/'));
+    });
+
+    it('6. Distinct findings sharing a rule or file are preserved', () => {
+      // Two distinct SQL injection vulnerabilities in the SAME file
+      const vuln1 = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/controllers/user.controller.js',
+        startLine: 30,
+        endLine: 30,
+        message: 'Unsafe SQL query in findUser',
+        evidence: 'const query = "SELECT * FROM users WHERE id = " + userId;'
+      };
+
+      const vuln2 = {
+        rule: 'javascript.express.security.audit.sqli',
+        path: 'src/controllers/user.controller.js',
+        startLine: 65,
+        endLine: 65,
+        message: 'Unsafe SQL query in deleteUser',
+        evidence: 'const query = "DELETE FROM users WHERE email = " + userEmail;'
+      };
+
+      const batch = [vuln1, vuln2];
+      const result = findingNormalizer.normalize(batch);
+
+      assert.strictEqual(result.success, true);
+      assert.strictEqual(result.findings.length, 2, 'Distinct vulnerabilities must NOT be merged');
+      assert.notStrictEqual(
+        result.findings[0].fingerprint,
+        result.findings[1].fingerprint,
+        'Distinct findings must have different fingerprints'
+      );
+      assert.strictEqual(result.metadata.duplicates, 0);
+      assert.strictEqual(result.metadata.unique, 2);
+    });
+
+    it('7. Missing evidence and optional fields are handled safely and produce stable fingerprints', () => {
+      const noEvidenceItem1 = {
+        rule: 'audit.header.missing-csp',
+        path: 'src/server.js',
+        startLine: 5,
+        message: 'Content-Security-Policy header is missing'
+      };
+
+      const noEvidenceItem2 = {
+        rule: 'audit.header.missing-csp',
+        path: 'src/server.js',
+        startLine: 25, // different line, no evidence
+        message: 'Content-Security-Policy header is missing'
+      };
+
+      const res1 = findingNormalizer.normalizeFinding(noEvidenceItem1);
+      const res2 = findingNormalizer.normalizeFinding(noEvidenceItem2);
+
+      assert.strictEqual(res1.success, true);
+      assert.strictEqual(res2.success, true);
+      assert.ok(res1.data.fingerprint && res1.data.fingerprint.length === 64);
+      assert.strictEqual(
+        res1.data.fingerprint,
+        res2.data.fingerprint,
+        'Findings without evidence should still produce stable, matching fingerprints based on rule/path/message'
+      );
+    });
+
+    it('8. Whitespace formatting variations in evidence do not change fingerprint', () => {
+      const evidenceTabs = {
+        rule: 'security.check',
+        path: 'src/app.js',
+        startLine: 1,
+        evidence: '\t\tconst  query  =\n\t\t\t"SELECT *";\n'
+      };
+
+      const evidenceSpaces = {
+        rule: 'security.check',
+        path: 'src/app.js',
+        startLine: 1,
+        evidence: '  const query = "SELECT *";  '
+      };
+
+      const resTabs = findingNormalizer.normalizeFinding(evidenceTabs);
+      const resSpaces = findingNormalizer.normalizeFinding(evidenceSpaces);
+
+      assert.strictEqual(resTabs.success, true);
+      assert.strictEqual(resSpaces.success, true);
+      assert.strictEqual(
+        resTabs.data.fingerprint,
+        resSpaces.data.fingerprint,
+        'Whitespace formatting variations in code snippet must not alter the fingerprint'
+      );
+    });
+
+    it('9. Deduplication can be disabled via options.deduplicate = false', () => {
       const identicalItem = {
         rule: 'duplicate.rule',
         path: 'src/app.js',
         startLine: 10,
-        endLine: 10,
-        message: 'Duplicate finding',
         evidence: 'const a = 1;'
       };
 
       const batch = [identicalItem, identicalItem];
-      const result = findingNormalizer.normalize(batch);
+      const result = findingNormalizer.normalize(batch, { deduplicate: false });
 
-      assert.strictEqual(result.findings.length, 2, 'Findings must NOT be deduplicated in this stage');
-    });
-
-    it('should NOT generate fingerprint on common finding output', () => {
-      const item = {
-        rule: 'rule.no.fingerprint',
-        path: 'src/app.js',
-        startLine: 1
-      };
-
-      const result = findingNormalizer.normalizeFinding(item);
-      assert.strictEqual(result.success, true);
-      assert.strictEqual(result.data.fingerprint, undefined, 'fingerprint must not be generated');
+      assert.strictEqual(result.findings.length, 2, 'Deduplication disabled must return both items');
+      assert.strictEqual(result.findings[0].fingerprint, result.findings[1].fingerprint);
     });
   });
 });

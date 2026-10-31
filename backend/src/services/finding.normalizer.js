@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const path = require('path');
 const { validateCommonFinding, CommonFindingSchema } = require('../validators/commonFinding.schema');
 
@@ -18,10 +19,7 @@ const { validateCommonFinding, CommonFindingSchema } = require('../validators/co
  * - evidence: Code snippet or matched evidence
  * - severity: CRITICAL | HIGH | MEDIUM | LOW | INFO
  * - confidence: HIGH | MEDIUM | LOW | UNKNOWN
- *
- * NOTE: Fingerprinting and deduplication are intentionally deferred to future
- * pipeline stages. This normalizer focuses strictly on schema conformity,
- * deterministic mappings, and graceful error handling.
+ * - fingerprint: Deterministic, stable 64-character SHA-256 hex string
  * ============================================================================
  */
 class FindingNormalizer {
@@ -31,27 +29,110 @@ class FindingNormalizer {
   }
 
   /**
-   * Deterministically map scanner-specific severity values to the existing VULNEX severity convention.
+   * Normalize code evidence into a consistent, stable string representation.
+   * Strips transient formatting differences and collapses whitespace.
    *
-   * Mapping Rules:
-   * 1. Exact VULNEX severities (case-insensitive):
-   *    - CRITICAL -> CRITICAL
-   *    - HIGH -> HIGH
-   *    - MEDIUM -> MEDIUM
-   *    - LOW -> LOW
-   *    - INFO -> INFO
-   * 2. Scanner-specific synonyms:
-   *    - FATAL, BLOCKER -> CRITICAL
-   *    - ERROR, MAJOR -> HIGH (overridden to CRITICAL if impact === 'CRITICAL' or security-severity >= 9.0)
-   *    - WARNING, WARN, MODERATE -> MEDIUM
-   *    - MINOR -> LOW
-   *    - INFORMATIONAL, NOTE, NOTICE, EXPERIMENT, INVENTORY -> INFO
-   * 3. Numerical CVSS / security-severity scores in metadata:
-   *    - score >= 9.0 -> CRITICAL
-   *    - score >= 7.0 -> HIGH
-   *    - score >= 4.0 -> MEDIUM
-   *    - score > 0.0  -> LOW
-   *    - default -> INFO
+   * @param {string|Object|any} rawEvidence
+   * @returns {string}
+   */
+  normalizeEvidence(rawEvidence) {
+    if (!rawEvidence) return '';
+
+    let text = '';
+    if (typeof rawEvidence === 'string') {
+      text = rawEvidence;
+    } else if (typeof rawEvidence === 'object') {
+      text = rawEvidence.codeSnippet || rawEvidence.snippet || rawEvidence.lines || JSON.stringify(rawEvidence);
+    } else {
+      text = String(rawEvidence);
+    }
+
+    return text
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Normalize finding message into a stable string representation.
+   * Scrubs dynamic line numbers and transient character offsets.
+   *
+   * @param {string|any} rawMessage
+   * @returns {string}
+   */
+  normalizeMessage(rawMessage) {
+    if (!rawMessage) return '';
+    return String(rawMessage)
+      .replace(/\bline\s+\d+\b/gi, '')
+      .replace(/:\d+:\d+/g, '')
+      .replace(/:\d+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  /**
+   * Generate a stable, deterministic SHA-256 fingerprint for a finding.
+   *
+   * Stability Invariants:
+   * 1. Deterministic across repeated runs.
+   * 2. Independent of volatile line numbers (line shifts due to unrelated edits do not change fingerprint).
+   * 3. Built from stable issue identity: normalized rule ID, normalized file path,
+   *    normalized code evidence, and normalized message.
+   * 4. Distinct vulnerabilities sharing a file or rule retain distinct fingerprints.
+   *
+   * @param {Object|string} paramOrRule Finding object or rule ID string
+   * @param {string} [path] File path (if first arg is rule string)
+   * @param {string|Object} [evidence=''] Evidence (if first arg is rule string)
+   * @param {string} [message=''] Message (if first arg is rule string)
+   * @param {Object} [metadata={}] Metadata (if first arg is rule string)
+   * @returns {string} 64-character lowercase hex SHA-256 string
+   */
+  generateFingerprint(paramOrRule, path = '', evidence = '', message = '', metadata = {}) {
+    let ruleVal;
+    let pathVal;
+    let evidenceVal;
+    let messageVal;
+
+    if (paramOrRule && typeof paramOrRule === 'object') {
+      ruleVal = paramOrRule.rule || paramOrRule.ruleId || paramOrRule.check_id;
+      pathVal = paramOrRule.path || paramOrRule.filePath || paramOrRule.file;
+      evidenceVal = paramOrRule.evidence !== undefined
+        ? paramOrRule.evidence
+        : (paramOrRule.codeSnippet || paramOrRule.extra?.lines || paramOrRule.snippet);
+      messageVal = paramOrRule.message !== undefined
+        ? paramOrRule.message
+        : (paramOrRule.extra?.message || paramOrRule.description);
+    } else {
+      ruleVal = paramOrRule;
+      pathVal = path;
+      evidenceVal = evidence;
+      messageVal = message;
+    }
+
+    const normRule = String(ruleVal || '').trim().toLowerCase();
+    const normPath = this.normalizePath(pathVal || '');
+    const normEvidence = this.normalizeEvidence(evidenceVal);
+    const normMessage = this.normalizeMessage(messageVal);
+
+    const components = [normRule, normPath];
+
+    if (normEvidence) {
+      components.push(normEvidence);
+    }
+    if (normMessage) {
+      components.push(normMessage);
+    }
+
+    const payload = components.join('::');
+    return crypto.createHash('sha256').update(payload).digest('hex');
+  }
+
+  /**
+   * Deterministically map scanner-specific severity values to the existing VULNEX severity convention.
    *
    * @param {string|number|any} rawSeverity
    * @param {Object} [metadata={}]
@@ -106,7 +187,6 @@ class FindingNormalizer {
         return 'INFO';
 
       default:
-        // Fallback for unmapped or empty severity
         return 'INFO';
     }
   }
@@ -184,6 +264,7 @@ class FindingNormalizer {
 
   /**
    * Normalize an individual raw finding or parser finding into the Common Finding Schema.
+   * Generates a stable deterministic fingerprint.
    *
    * @param {Object} rawFinding Finding record from Semgrep parser or scanner
    * @param {Object} [options={}] Normalization options
@@ -290,7 +371,16 @@ class FindingNormalizer {
     const explicitConfidence = rawFinding.confidence;
     const confidence = this.mapConfidence(metadata || {}, explicitConfidence);
 
-    // 8. Extract optional columns and contextual fields
+    // 8. Generate stable deterministic fingerprint
+    const fingerprint = this.generateFingerprint({
+      rule,
+      path: normalizedPath,
+      evidence,
+      message,
+      metadata
+    });
+
+    // 9. Extract optional columns and contextual fields
     const startCol = rawFinding.startCol !== undefined
       ? rawFinding.startCol
       : (rawFinding.start?.col !== undefined ? rawFinding.start.col : null);
@@ -304,8 +394,8 @@ class FindingNormalizer {
     const scanner = rawFinding.scanner || options.defaultScanner || 'semgrep';
 
     // Construct common finding object preserving any custom scanner attributes
-    // (excluding database/orchestrator entity fields: id, scanId, fingerprint)
-    const { id, scanId, fingerprint, ...extraProperties } = rawFinding;
+    // (excluding database/orchestrator entity fields: id, scanId)
+    const { id, scanId, ...extraProperties } = rawFinding;
 
     const candidate = {
       ...extraProperties,
@@ -319,6 +409,7 @@ class FindingNormalizer {
       evidence,
       severity,
       confidence,
+      fingerprint,
 
       // Scanner-specific metadata preserved without breaking common schema
       metadata,
@@ -350,20 +441,25 @@ class FindingNormalizer {
   }
 
   /**
-   * Normalize a collection of scanner findings or Semgrep parser output into Common Finding Schema.
-   * Handles malformed records gracefully: discards or reports them in errors without crashing.
+   * Normalize a collection of scanner findings into Common Finding Schema with fingerprint deduplication.
+   *
+   * Deduplication Behavior (options.deduplicate !== false):
+   * - Uses stable SHA-256 fingerprint as identity.
+   * - Duplicate issues are merged: references combined, metadata merged, duplicateCount tracked.
+   * - Distinct vulnerabilities sharing a file or rule are preserved.
    *
    * @param {Array<Object>|Object} input Semgrep parser result or array of raw findings
    * @param {Object} [options={}] Normalization options
+   * @param {boolean} [options.deduplicate=true] Whether to deduplicate by fingerprint
    * @returns {{
    *   success: boolean,
    *   findings: Array<Object>,
    *   errors: Array<string>,
-   *   metadata: { total: number, valid: number, invalid: number }
+   *   metadata: { total: number, valid: number, duplicates: number, unique: number, invalid: number }
    * }}
    */
   normalize(input, options = {}) {
-    const findings = [];
+    const deduplicate = options.deduplicate !== false;
     const errors = [];
 
     // Handle null or undefined input
@@ -372,7 +468,7 @@ class FindingNormalizer {
         success: false,
         findings: [],
         errors: ['Input to normalize cannot be null or undefined'],
-        metadata: { total: 0, valid: 0, invalid: 1 }
+        metadata: { total: 0, valid: 0, duplicates: 0, unique: 0, invalid: 1 }
       };
     }
 
@@ -394,31 +490,76 @@ class FindingNormalizer {
         success: false,
         findings: [],
         errors: ['Invalid input type: expected an array, finding object, or parser output object'],
-        metadata: { total: 0, valid: 0, invalid: 1 }
+        metadata: { total: 0, valid: 0, duplicates: 0, unique: 0, invalid: 1 }
       };
     }
 
     const total = recordsToProcess.length;
+    const uniqueFindingsByFp = new Map();
+    const rawValidFindings = [];
+    let duplicatesCount = 0;
 
     for (let i = 0; i < recordsToProcess.length; i++) {
       const rawRecord = recordsToProcess[i];
       const result = this.normalizeFinding(rawRecord, options);
 
       if (result.success) {
-        findings.push(result.data);
+        const finding = result.data;
+        const fp = finding.fingerprint;
+        rawValidFindings.push(finding);
+
+        if (deduplicate) {
+          if (uniqueFindingsByFp.has(fp)) {
+            duplicatesCount++;
+            const existing = uniqueFindingsByFp.get(fp);
+
+            // Merge references (set union)
+            if (Array.isArray(finding.references) && finding.references.length > 0) {
+              const combined = new Set([...(existing.references || []), ...finding.references]);
+              existing.references = Array.from(combined);
+            }
+
+            // Merge metadata if finding has keys not present in existing
+            if (finding.metadata && typeof finding.metadata === 'object') {
+              existing.metadata = {
+                ...(finding.metadata || {}),
+                ...(existing.metadata || {})
+              };
+            }
+
+            // Preserve codeSnippet if existing was empty but duplicate has one
+            if (!existing.codeSnippet && finding.codeSnippet) {
+              existing.codeSnippet = finding.codeSnippet;
+            }
+
+            // Increment occurrence counter
+            existing.duplicateCount = (existing.duplicateCount || 1) + 1;
+          } else {
+            finding.duplicateCount = 1;
+            uniqueFindingsByFp.set(fp, finding);
+          }
+        }
       } else {
         errors.push(`Record index [${i}] rejected: ${result.error}`);
       }
     }
 
+    const finalFindings = deduplicate
+      ? Array.from(uniqueFindingsByFp.values())
+      : rawValidFindings;
+
+    const validTotal = rawValidFindings.length;
+
     return {
       success: errors.length === 0,
-      findings,
+      findings: finalFindings,
       errors,
       metadata: {
         total,
-        valid: findings.length,
-        invalid: total - findings.length
+        valid: validTotal,
+        duplicates: duplicatesCount,
+        unique: finalFindings.length,
+        invalid: total - validTotal
       }
     };
   }

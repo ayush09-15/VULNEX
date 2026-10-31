@@ -48,6 +48,7 @@ const CommonFindingSchema = z.object({
   evidence: z.union([z.string(), z.record(z.any())]).default(''),
   severity: SeverityEnum,
   confidence: ConfidenceEnum,
+  fingerprint: z.string().min(1, 'Stable fingerprint required'),
 
   // Optional Scanner Metadata & Context
   metadata: z.record(z.any()).nullable().optional().default(null),
@@ -57,7 +58,8 @@ const CommonFindingSchema = z.object({
   startCol: z.number().int().nullable().optional(),
   endCol: z.number().int().nullable().optional(),
   codeSnippet: z.string().nullable().optional(),
-  references: z.array(z.string()).optional().default([])
+  references: z.array(z.string()).optional().default([]),
+  duplicateCount: z.number().int().optional()
 }).passthrough().refine(
   (data) => data.endLine >= data.startLine,
   { message: 'endLine must be greater than or equal to startLine', path: ['endLine'] }
@@ -98,3 +100,4 @@ module.exports = {
   validateCommonFinding,
   validateCommonFindings
 };
+
