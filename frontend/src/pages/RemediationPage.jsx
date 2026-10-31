@@ -17,40 +17,12 @@ import DiffViewer from '../components/remediation/DiffViewer';
 import VerificationChecklist from '../components/verification/VerificationChecklist';
 import { vulnexApi } from '../services/api';
 
-const SAMPLE_PATCH = {
-  id: 'patch_sql_fix_01',
-  findingId: 'find_sql_injection_01',
-  diff: `--- a/src/routes/user.js
-+++ b/src/routes/user.js
-@@ -22,5 +22,5 @@ router.get('/profile', async (req, res) => {
-    const { id } = req.query;
--   const query = \`SELECT * FROM users WHERE id = '\${id}'\`;
--   const user = await db.query(query);
-+   const query = 'SELECT * FROM users WHERE id = $1';
-+   const user = await db.query(query, [id]);
-    return res.json(user);
- }`,
-  rationale:
-    'Replaces dynamic template string interpolation with parameterized prepared statement query ($1), neutralizing SQL injection vulnerability (CWE-89) without altering external endpoint contracts.',
-  changedFiles: ['src/routes/user.js'],
-  reviewState: 'PENDING_REVIEW',
-  evidenceReferences: [
-    { type: 'SNIPPET', reference: "const query = `SELECT * FROM users WHERE id = '${id}'`;" },
-    { type: 'RULE', reference: 'javascript.express.security.audit.sqli' }
-  ],
-  metadata: {
-    model: 'gemma-2-9b-it',
-    confidence: 'HIGH',
-    requiresHumanReview: true
-  }
-};
-
 export default function RemediationPage() {
   const location = useLocation();
   const incomingFinding = location.state?.finding;
   const incomingPatchId = location.state?.patchId;
 
-  const [patch, setPatch] = useState(SAMPLE_PATCH);
+  const [patch, setPatch] = useState(null);
   const [patchesList, setPatchesList] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generatingPatch, setGeneratingPatch] = useState(false);
@@ -60,65 +32,28 @@ export default function RemediationPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [isRollingBack, setIsRollingBack] = useState(false);
 
-  useEffect(() => {
-    let mounted = true;
-    async function loadPatches() {
-      try {
-        setLoading(true);
-        const res = await vulnexApi.patches.list();
-        const items = Array.isArray(res) ? res : (res?.data || []);
-        if (mounted) {
-          setPatchesList(items);
-
-          if (incomingPatchId) {
-            const found = items.find(p => p.id === incomingPatchId);
-            if (found) {
-              setPatch(found);
-              return;
-            }
-          }
-
-          if (incomingFinding) {
-            const found = items.find(p => p.findingId === incomingFinding.id);
-            if (found) {
-              setPatch(found);
-              return;
-            } else if (incomingFinding.proposedPatch) {
-              setPatch(incomingFinding.proposedPatch);
-              return;
-            }
-          }
-
-          if (items.length > 0) {
-            setPatch(items[0]);
-          }
-        }
-      } catch {
-        // Fall back cleanly to sample proposal
-      } finally {
-        if (mounted) setLoading(false);
-      }
-    }
-    loadPatches();
-    return () => {
-      mounted = false;
-    };
-  }, [incomingFinding, incomingPatchId]);
-
   const handleGeneratePatchForFinding = async () => {
     if (!incomingFinding) return;
     setGeneratingPatch(true);
     setActionMessage(null);
     try {
-      const res = await vulnexApi.findings.generatePatch(incomingFinding.id);
+      const res = await vulnexApi.findings.generatePatch(incomingFinding.id, {
+        finding: incomingFinding,
+        sourceContext: incomingFinding.sourceContext?.content || incomingFinding.evidence
+      });
       const newPatch = res?.data || res;
-      if (newPatch) {
+      if (newPatch && newPatch.id) {
+        if (newPatch.findingId !== incomingFinding.id) {
+          throw new Error(`Finding ID mismatch: Generated patch ${newPatch.id} belongs to finding ${newPatch.findingId}, not ${incomingFinding.id}.`);
+        }
         setPatch(newPatch);
         setPatchesList((prev) => [newPatch, ...prev.filter(p => p.id !== newPatch.id)]);
         setActionMessage({
           type: 'success',
-          text: `AI patch proposal generated for finding ${incomingFinding.id}. Ready for human review.`
+          text: `Patch proposal ${newPatch.id} successfully generated for finding ${incomingFinding.id}. Ready for human review.`
         });
+      } else {
+        throw new Error('Patch proposal generation returned empty payload.');
       }
     } catch (err) {
       setActionMessage({
@@ -130,9 +65,83 @@ export default function RemediationPage() {
     }
   };
 
+  useEffect(() => {
+    let mounted = true;
+    async function loadPatches() {
+      try {
+        setLoading(true);
+        const res = await vulnexApi.patches.list();
+        const items = Array.isArray(res) ? res : (res?.data || []);
+        if (!mounted) return;
+        setPatchesList(items);
+
+        // 1. If navigated with specific target finding
+        if (incomingFinding?.id) {
+          const found = items.find(p => p.findingId === incomingFinding.id);
+          if (found) {
+            setPatch(found);
+            return;
+          } else if (incomingFinding.proposedPatch && incomingFinding.proposedPatch.findingId === incomingFinding.id) {
+            setPatch(incomingFinding.proposedPatch);
+            return;
+          } else if (incomingFinding.patchId) {
+            try {
+              const pRes = await vulnexApi.patches.get(incomingFinding.patchId);
+              const pData = pRes?.data || pRes;
+              if (pData?.id && pData.findingId === incomingFinding.id && mounted) {
+                setPatch(pData);
+                return;
+              }
+            } catch (_) {}
+          }
+
+          // Finding has no existing patch yet: strictly null (never load another finding's patch)
+          setPatch(null);
+
+          // Auto-trigger if navigated via "Generate Patch" drawer button
+          if (location.state?.autoGenerate) {
+            handleGeneratePatchForFinding();
+          }
+          return;
+        }
+
+        // 2. If navigated with specific patch ID
+        if (incomingPatchId) {
+          const found = items.find(p => p.id === incomingPatchId);
+          if (found) {
+            setPatch(found);
+            return;
+          }
+        }
+
+        // 3. Fallback: If global patches exist and no target finding specified, select newest
+        if (items.length > 0) {
+          setPatch(items[0]);
+        } else {
+          setPatch(null);
+        }
+      } catch {
+        if (mounted) setPatch(null);
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    }
+    loadPatches();
+    return () => {
+      mounted = false;
+    };
+  }, [incomingFinding?.id, incomingPatchId]);
+
   const handleSelectPatch = (selectedId) => {
     const selected = patchesList.find(p => p.id === selectedId);
     if (selected) {
+      if (incomingFinding?.id && selected.findingId !== incomingFinding.id) {
+        setActionMessage({
+          type: 'error',
+          text: `Invariant violation: Patch ${selected.id} is associated with finding ${selected.findingId}, but target finding is ${incomingFinding.id}. Selection rejected.`
+        });
+        return;
+      }
       setPatch(selected);
       setApplyResult(null);
       setVerificationResult(null);
@@ -352,29 +361,35 @@ export default function RemediationPage() {
       )}
 
       {/* Patch Selector if multiple patches exist */}
-      {patchesList.length > 1 && (
-        <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-800 flex items-center gap-3 overflow-x-auto">
-          <span className="text-xs font-mono text-slate-400 shrink-0 flex items-center gap-1.5">
-            <Layers className="w-3.5 h-3.5 text-cyan-400" />
-            Available Patches ({patchesList.length}):
-          </span>
-          <div className="flex items-center gap-2">
-            {patchesList.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => handleSelectPatch(p.id)}
-                className={`px-3 py-1 rounded-lg text-xs font-mono transition-all whitespace-nowrap ${
-                  patch?.id === p.id
-                    ? 'bg-cyan-600 text-white font-semibold'
-                    : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
-                }`}
-              >
-                {p.id} ({p.reviewState || p.status})
-              </button>
-            ))}
+      {(() => {
+        const relevantPatches = incomingFinding?.id
+          ? patchesList.filter(p => p.findingId === incomingFinding.id)
+          : patchesList;
+        if (relevantPatches.length <= 1) return null;
+        return (
+          <div className="p-3 rounded-xl bg-slate-900/50 border border-slate-800 flex items-center gap-3 overflow-x-auto">
+            <span className="text-xs font-mono text-slate-400 shrink-0 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5 text-cyan-400" />
+              Available Patches ({relevantPatches.length}):
+            </span>
+            <div className="flex items-center gap-2">
+              {relevantPatches.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => handleSelectPatch(p.id)}
+                  className={`px-3 py-1 rounded-lg text-xs font-mono transition-all whitespace-nowrap ${
+                    patch?.id === p.id
+                      ? 'bg-cyan-600 text-white font-semibold'
+                      : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+                  }`}
+                >
+                  {p.id} ({p.reviewState || p.status})
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Action Notification */}
       {actionMessage && (
@@ -398,44 +413,86 @@ export default function RemediationPage() {
         </div>
       )}
 
-      {/* Syntax-Aware Diff Viewer & Approval Panel */}
-      <DiffViewer
-        patch={patch}
-        onApprove={handleApprove}
-        onReject={handleReject}
-        onApply={handleApply}
-        isLoading={loading}
-      />
+      {/* Syntax-Aware Diff Viewer & Approval Panel (when patch exists) */}
+      {patch ? (
+        <>
+          <DiffViewer
+            patch={patch}
+            targetFindingId={incomingFinding?.id}
+            onApprove={handleApprove}
+            onReject={handleReject}
+            onApply={handleApply}
+            isLoading={loading}
+          />
 
-      {/* Workspace Rollback Action when applied */}
-      {(patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED') && (
-        <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
-          <div className="space-y-0.5">
-            <span className="text-xs font-semibold text-slate-200 block">Workspace Isolation Status</span>
-            <span className="text-[11px] font-mono text-slate-400 block">
-              Applied in disposable workspace: <code className="text-cyan-400">{patch.appliedWorkspaceId || 'ws_disposable'}</code>
-            </span>
+          {/* Workspace Rollback Action when applied */}
+          {(patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED') && (
+            <div className="p-4 rounded-xl bg-slate-900/60 border border-slate-800 flex items-center justify-between">
+              <div className="space-y-0.5">
+                <span className="text-xs font-semibold text-slate-200 block">Workspace Isolation Status</span>
+                <span className="text-[11px] font-mono text-slate-400 block">
+                  Applied in disposable workspace: <code className="text-cyan-400">{patch.appliedWorkspaceId || 'ws_disposable'}</code>
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => handleRollback(patch.id)}
+                disabled={isRollingBack}
+                className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:bg-slate-900 text-slate-300 text-xs font-mono transition-all border border-slate-700"
+              >
+                <RotateCcw className={`w-3.5 h-3.5 ${isRollingBack ? 'animate-spin' : ''}`} />
+                <span>Rollback Workspace</span>
+              </button>
+            </div>
+          )}
+
+          {/* Verification Checklist (Commit 40) */}
+          {(applyResult || patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED' || verificationResult) && (
+            <VerificationChecklist
+              verification={verificationResult}
+              patch={patch}
+              onRunVerification={() => handleVerify(patch.id)}
+              isVerifying={isVerifying}
+            />
+          )}
+        </>
+      ) : (
+        /* Honest unpatched empty state */
+        <div className="p-10 text-center rounded-2xl bg-slate-900/40 border border-slate-800 space-y-4 font-sans">
+          <div className="p-3.5 rounded-2xl bg-slate-800/80 border border-slate-700/60 w-fit mx-auto text-cyan-400">
+            <Sparkles className="w-8 h-8" />
           </div>
-          <button
-            type="button"
-            onClick={() => handleRollback(patch.id)}
-            disabled={isRollingBack}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:bg-slate-900 text-slate-300 text-xs font-mono transition-all border border-slate-700"
-          >
-            <RotateCcw className={`w-3.5 h-3.5 ${isRollingBack ? 'animate-spin' : ''}`} />
-            <span>Rollback Workspace</span>
-          </button>
+          <div className="space-y-1.5 max-w-md mx-auto">
+            <h3 className="text-base font-bold text-slate-100 font-mono">
+              {incomingFinding ? 'No Patch Generated Yet' : 'No Patch Proposals Available'}
+            </h3>
+            <p className="text-xs text-slate-400 leading-relaxed font-mono">
+              {incomingFinding
+                ? `No remediation patch proposal has been created for finding ${incomingFinding.id} yet. Click below to inspect the vulnerable code and generate a verified unified diff.`
+                : 'Select a security finding from the Findings Explorer to generate an AI-assisted remediation patch.'}
+            </p>
+          </div>
+          {incomingFinding && (
+            <button
+              type="button"
+              onClick={handleGeneratePatchForFinding}
+              disabled={generatingPatch}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 text-white text-xs font-semibold font-mono shadow-lg shadow-cyan-950/50 transition-all"
+            >
+              {generatingPatch ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Generating Patch Proposal...</span>
+                </>
+              ) : (
+                <>
+                  <Wrench className="w-4 h-4" />
+                  <span>Generate Patch with AI</span>
+                </>
+              )}
+            </button>
+          )}
         </div>
-      )}
-
-      {/* Verification Checklist (Commit 40) */}
-      {(applyResult || patch?.status === 'APPLIED_TO_TEMP' || patch?.status === 'VERIFIED' || verificationResult) && (
-        <VerificationChecklist
-          verification={verificationResult}
-          patch={patch}
-          onRunVerification={() => handleVerify(patch.id)}
-          isVerifying={isVerifying}
-        />
       )}
     </div>
   );
