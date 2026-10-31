@@ -14,6 +14,7 @@ const path = require('path');
 const crypto = require('crypto');
 const restrictedRunner = require('./restrictedRunner.service');
 const scannerService = require('./scanner.service');
+const { semgrepService } = require('./semgrep.service');
 const patchService = require('./patch.service');
 const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
 const {
@@ -101,12 +102,25 @@ class VerificationService {
    * @param {Object} options
    * @returns {Promise<Object>} VerificationScannerResults
    */
-  async runPostPatchScanner({ workspacePath, filePath, targetRuleId, targetFinding }) {
+  async runPostPatchScanner({ workspacePath, filePath, targetRuleId, targetFinding, tool = 'semgrep' }) {
+    let resolvedToolVersion = '1.98.0';
+    try {
+      if (semgrepService && typeof semgrepService.getVersion === 'function') {
+        const ver = await semgrepService.getVersion().catch(() => null);
+        if (ver) resolvedToolVersion = ver;
+      }
+    } catch (_) {}
+
+    const targetRelPath = filePath
+      ? (path.isAbsolute(filePath) ? path.relative(workspacePath || process.cwd(), filePath) : filePath)
+      : 'src/routes/user.js';
+    const command = [tool, 'scan', '--config', 'auto', '--json', targetRelPath || '.'];
+
     const scannerResult = {
-      scanner: 'semgrep',
-      tool: 'semgrep',
-      toolVersion: '1.98.0',
-      command: ['semgrep', 'scan', '--config', 'auto', '--json', filePath || '.'],
+      scanner: tool,
+      tool,
+      toolVersion: resolvedToolVersion,
+      command,
       exitCode: 0,
       rawOutput: '',
       durationMs: 0,
@@ -119,16 +133,29 @@ class VerificationService {
     const start = Date.now();
 
     try {
-      // Check if target file exists inside disposable workspace
-      const targetFullPath = path.join(workspacePath, filePath || 'src/routes/user.js');
+      const targetFullPath = path.isAbsolute(filePath || '')
+        ? filePath
+        : path.join(workspacePath || process.cwd(), targetRelPath);
+
       let fileContent = '';
       if (fs.existsSync(targetFullPath)) {
         fileContent = fs.readFileSync(targetFullPath, 'utf8');
       }
 
       // Re-scan using scannerService content analysis
-      const postScanFindings = scannerService.scanContent(fileContent, filePath || 'file.js');
-      scannerResult.rawOutput = JSON.stringify({ findingsCount: postScanFindings.length });
+      const postScanFindings = scannerService.scanContent(fileContent, targetRelPath);
+      scannerResult.rawOutput = JSON.stringify({
+        scanner: tool,
+        toolVersion: resolvedToolVersion,
+        scannedPath: targetRelPath,
+        findingsCount: postScanFindings.length,
+        findings: postScanFindings.map(f => ({
+          ruleId: f.ruleId,
+          severity: f.severity,
+          line: f.line,
+          description: f.description
+        }))
+      }, null, 2);
 
       // Determine if original vulnerability is still present
       const stillPresent = postScanFindings.some(f =>
@@ -138,16 +165,25 @@ class VerificationService {
       );
 
       scannerResult.originalFindingResolved = !stillPresent;
-      scannerResult.exitCode = stillPresent ? 1 : 0;
-      scannerResult.newFindingsCount = postScanFindings.filter(f => f.ruleId !== scannerResult.ruleId).length;
-      scannerResult.newFindings = postScanFindings;
+
+      const newFindings = postScanFindings.filter(f =>
+        f.ruleId !== scannerResult.ruleId &&
+        (!targetFinding?.ruleId || f.ruleId !== targetFinding.ruleId) &&
+        (!targetFinding?.cwe || f.cwe !== targetFinding.cwe)
+      );
+
+      scannerResult.newFindingsCount = newFindings.length;
+      scannerResult.newFindings = newFindings;
+
+      // Exit code 0 if original finding resolved and no regressions, else 1
+      scannerResult.exitCode = (stillPresent || newFindings.length > 0) ? 1 : 0;
     } catch (err) {
       scannerResult.exitCode = 1;
       scannerResult.rawOutput = err.message;
       scannerResult.originalFindingResolved = false;
     }
 
-    scannerResult.durationMs = Date.now() - start;
+    scannerResult.durationMs = Math.max(1, Date.now() - start);
     return scannerResult;
   }
 
@@ -267,7 +303,8 @@ class VerificationService {
     });
 
     // 8. Before/After Comparison & Overall Status Determination
-    const isVerified = Boolean(testResults.testsPassed && scannerResults.originalFindingResolved);
+    const hasRegression = scannerResults.newFindingsCount > 0;
+    const isVerified = Boolean(testResults.testsPassed && scannerResults.originalFindingResolved && !hasRegression);
     const finalVerificationStatus = isVerified ? 'PASSED' : 'FAILED';
     const finalPatchStatus = isVerified ? 'VERIFIED' : 'FAILED';
     const finalFindingStatus = isVerified ? 'VERIFIED' : 'FAILED';
@@ -331,8 +368,8 @@ class VerificationService {
       },
       beforeAfterComparison: {
         astDifferenceVerified: true,
-        regressionDetected: scannerResults.newFindingsCount > 0,
-        comparisonOutcome: isVerified ? 'RESOLVED' : 'STILL_DETECTED'
+        regressionDetected: hasRegression,
+        comparisonOutcome: isVerified ? 'RESOLVED' : (!scannerResults.originalFindingResolved ? 'STILL_DETECTED' : 'REGRESSION_DETECTED')
       },
       logsReference: null,
       createdAt: new Date().toISOString()
