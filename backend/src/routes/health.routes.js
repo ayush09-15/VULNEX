@@ -7,10 +7,17 @@ const apiResponse = require('../utils/apiResponse');
  * Lightweight health check endpoint verifying service liveness
  */
 router.get('/', (req, res) => {
-  return apiResponse.success(res, {
-    status: 'healthy',
-    service: 'vulnex-api'
-  }, 200);
+  try {
+    return apiResponse.success(res, {
+      status: 'healthy',
+      service: 'vulnex-api'
+    }, 200);
+  } catch (err) {
+    return apiResponse.error(res, {
+      code: 'HEALTH_CHECK_FAILED',
+      message: err.message || 'Health check encountered an internal failure'
+    }, 500);
+  }
 });
 
 module.exports = router;

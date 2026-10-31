@@ -117,6 +117,12 @@ router.post('/:id/reject', (req, res) => {
         message: err.message
       }, 404);
     }
+    if (err.name === 'InvalidReviewStateTransitionError' || err.statusCode === 409 || err.code === 'INVALID_STATE_TRANSITION') {
+      return apiResponse.error(res, {
+        code: 'INVALID_STATE_TRANSITION',
+        message: err.message
+      }, 409);
+    }
     return apiResponse.error(res, {
       code: 'PATCH_REJECTION_FAILED',
       message: err.message || 'Failed to reject patch.'
@@ -226,12 +232,12 @@ router.post('/:id/verify', async (req, res) => {
     const requestId = req.id || req.headers?.['x-request-id'] || 'req_verify';
 
     const result = await verificationService.verifyPatch({
-      patchId,
-      testFile,
-      command,
-      requestId,
-      actor: req.user?.id || 'security_operator',
       ...options,
+      patchId,
+      testFile: testFile !== undefined ? testFile : options?.testFile,
+      command: command !== undefined ? command : options?.command || 'node',
+      requestId,
+      actor: req.user?.id || options?.actor || 'security_operator',
       ...(req.body?.testResults ? { testResults: req.body.testResults } : {}),
       ...(req.body?.failingTests !== undefined ? { failingTests: req.body.failingTests } : {}),
       ...(req.body?.scannerUnavailable !== undefined ? { scannerUnavailable: req.body.scannerUnavailable } : {}),

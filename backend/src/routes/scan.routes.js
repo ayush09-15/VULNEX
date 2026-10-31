@@ -38,7 +38,7 @@ router.get('/', (req, res) => {
  */
 router.post('/', async (req, res) => {
   try {
-    const { repositoryId, ref, scanners, repositoryPath } = req.body;
+    const { repositoryId, ref, scanners, repositoryPath } = req.body || {};
 
     if (!repositoryId) {
       return apiResponse.error(res, {
@@ -70,7 +70,7 @@ router.post('/', async (req, res) => {
     if (!validation.success) {
       return apiResponse.error(res, {
         code: 'INVALID_INPUT',
-        message: validation.error.issues[0]?.message || 'Invalid scan request parameters.',
+        message: validation.error?.issues?.[0]?.message || 'Invalid scan request parameters.',
         details: validation.error.issues
       }, 400);
     }

@@ -136,8 +136,10 @@ export default function FindingsPage() {
             items = Array.isArray(res) ? res : (res?.data || []);
           }
         }
-        if (isMounted && Array.isArray(items) && items.length > 0) {
-          setFindings(items);
+        if (isMounted && Array.isArray(items)) {
+          if (targetScanId || items.length > 0) {
+            setFindings(items);
+          }
         }
       } catch {
         // Fall back gracefully to initialized findings

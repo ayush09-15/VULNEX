@@ -19,6 +19,7 @@ const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
 const scannerService = require('../services/scanner.service');
 const patchService = require('../services/patch.service');
 const verificationService = require('../services/verification.service');
+const aiService = require('../services/ai.service');
 
 // ----------------------------------------------------------------------------
 // GET /api/findings - List findings with optional query filters
@@ -180,6 +181,12 @@ router.post('/:id/analyze', async (req, res) => {
     }
 
     const result = await investigationService.investigateFinding(findingId, { codeContext: req.body?.codeContext });
+    if (!result || !result.investigation) {
+      return apiResponse.error(res, {
+        code: 'INVESTIGATION_FAILED',
+        message: 'Could not execute investigation for finding.'
+      }, 500);
+    }
     return apiResponse.success(res, result.investigation, 200);
   } catch (err) {
     return apiResponse.error(res, {
@@ -203,7 +210,6 @@ router.post('/:id/patches', async (req, res) => {
       }, 404);
     }
 
-    const aiService = require('../services/ai.service');
     const sourceContext = req.body?.sourceContext || req.body?.originalCode || finding.evidence || finding.codeSnippet || '';
 
     // Generate proposal via AI Service
@@ -270,7 +276,6 @@ router.post('/:id/generate-patch', async (req, res) => {
     }
 
     const { originalCode } = req.body || {};
-    const aiService = require('../services/ai.service');
     const patchResult = await aiService.generatePatch(finding, originalCode || finding.codeSnippet || finding.evidence);
 
     const diff = patchService.createUnifiedDiff({
@@ -359,7 +364,8 @@ router.post('/:id/apply-patch', async (req, res) => {
     const { approved, confirm, approverComments, patchedCode, workspacePath } = req.body || {};
 
     // Explicit Confirmation Gate (Commit 34 Invariant)
-    if (approved !== true && confirm !== true) {
+    const isApproved = approved === true || approved === 'true' || confirm === true || confirm === 'true';
+    if (!isApproved) {
       return apiResponse.error(res, {
         code: 'APPROVAL_REQUIRED',
         message: 'Patch application requires explicit user approval (approved: true).'
@@ -421,7 +427,7 @@ router.post('/:id/rollback', async (req, res) => {
       }, 404);
     }
 
-    const patch = patchService.getPatchByFindingId(findingId) || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
+    const patch = (typeof patchService.getPatchByFindingId === 'function' ? patchService.getPatchByFindingId(findingId) : null) || (finding.patchId ? patchService.getPatchById(finding.patchId) : null);
     if (patch) {
       const result = await patchService.rollbackPatch(patch.id);
       return apiResponse.success(res, result, 200);

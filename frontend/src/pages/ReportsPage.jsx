@@ -886,7 +886,11 @@ export default function ReportsPage() {
                                         <strong className="text-slate-400">Evidence:</strong>
                                         <ul className="list-disc list-inside text-slate-400 pl-2 mt-1 space-y-0.5">
                                           {f.investigation.evidence.map((ev, i) => (
-                                            <li key={i}>{ev}</li>
+                                            <li key={i}>
+                                              {typeof ev === 'object' && ev !== null
+                                                ? (ev.reference || ev.evidence || ev.snippet || ev.text || JSON.stringify(ev))
+                                                : String(ev)}
+                                            </li>
                                           ))}
                                         </ul>
                                       </div>
