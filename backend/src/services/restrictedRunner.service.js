@@ -73,7 +73,7 @@ class RestrictedRunnerService {
       throw new UnsafeExecutionError('Test binary must be a non-empty string');
     }
 
-    const cleanBinary = path.basename(binary).toLowerCase().replace(/\.exe$/, '');
+    const cleanBinary = path.basename(binary).toLowerCase().replace(/\.(exe|cmd|bat)$/i, '');
     if (!ALLOWED_TEST_BINARIES.has(cleanBinary)) {
       throw new UnsafeExecutionError(
         `Arbitrary binary "${binary}" is not permitted. Only [${Array.from(ALLOWED_TEST_BINARIES).join(', ')}] are allowed.`

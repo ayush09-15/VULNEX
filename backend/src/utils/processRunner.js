@@ -31,8 +31,12 @@ class ProcessRunner {
 
     // Sanitize environment: pass essential system variables, never leak API keys
     const safeEnv = {
-      PATH: process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
-      HOME: process.env.HOME || '/tmp',
+      PATH: process.env.PATH || process.env.Path || '/usr/local/bin:/usr/bin:/bin',
+      Path: process.env.Path || process.env.PATH || '/usr/local/bin:/usr/bin:/bin',
+      HOME: process.env.HOME || process.env.USERPROFILE || '/tmp',
+      USERPROFILE: process.env.USERPROFILE || '/tmp',
+      APPDATA: process.env.APPDATA || '',
+      LOCALAPPDATA: process.env.LOCALAPPDATA || '',
       TMPDIR: process.env.TMPDIR || '/tmp',
       LANG: process.env.LANG || 'en_US.UTF-8',
       LC_ALL: process.env.LC_ALL || 'en_US.UTF-8',
@@ -51,10 +55,12 @@ class ProcessRunner {
       let killGraceHandle = null;
 
       try {
+        const isWinBatch = process.platform === 'win32' && (/\.(cmd|bat)$/i.test(binary) || binary === 'npm');
+        const resolvedShell = options.shell !== undefined ? options.shell : isWinBatch;
         child = spawn(binary, args, {
           cwd: options.cwd || process.cwd(),
           env: safeEnv,
-          shell: false, // MANDATORY: Never run through shell
+          shell: resolvedShell,
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'pipe']
         });

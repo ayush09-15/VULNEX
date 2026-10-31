@@ -21,7 +21,7 @@ const npmAuditParser = require('./npmAudit.parser');
  */
 class NpmAuditService {
   constructor() {
-    this.configuredBin = process.env.NPM_BIN || 'npm';
+    this.configuredBin = process.env.NPM_BIN || (process.platform === 'win32' ? 'npm.cmd' : 'npm');
     this.defaultTimeoutSeconds = parseInt(process.env.SCAN_TIMEOUT_SECONDS, 10) || 120;
     this.cachedVersion = null;
     this.runner = processRunner;
