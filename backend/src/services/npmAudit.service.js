@@ -228,3 +228,4 @@ const npmAuditService = new NpmAuditService();
 npmAuditService.NpmAuditService = NpmAuditService;
 
 module.exports = npmAuditService;
+
