@@ -1,0 +1,8 @@
+{
+  "assessment": "LIKELY_TRUE",
+  "severity": "HIGH",
+  "summary": "SQL injection detected in query parameter handler.",
+  "evidence": [
+    "const q = `SELECT * FROM users WHERE id = ${id}`;"
+  ]
+}

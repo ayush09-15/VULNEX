@@ -1,0 +1,11 @@
+I have thoroughly reviewed the provided code excerpt for potential security vulnerabilities.
+
+Based on my analysis:
+- The function constructs a dynamic query using unescaped parameters.
+- This creates a High-Severity SQL Injection vulnerability.
+- An attacker could bypass authentication or access unauthorized records.
+
+Recommendations:
+1. Use parameterized queries.
+2. Ensure strict input validation is enforced at the controller layer.
+3. Review database permission levels.

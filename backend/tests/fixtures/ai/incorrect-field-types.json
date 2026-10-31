@@ -1,0 +1,16 @@
+{
+  "assessment": true,
+  "severity": 10,
+  "summary": [
+    "SQL injection vulnerability discovered"
+  ],
+  "evidence": "db.query(`SELECT * FROM users WHERE id = ${id}`)",
+  "preconditions": "Requires network connectivity to port 3000",
+  "potentialImpact": {
+    "compromise": "critical",
+    "dataLoss": true
+  },
+  "recommendedFix": 42,
+  "confidence": "VERY_CONFIDENT",
+  "limitations": "none observed"
+}

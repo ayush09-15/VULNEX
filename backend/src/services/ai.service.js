@@ -1,3 +1,8 @@
+const {
+  parseAndValidateAIInvestigation,
+  createFallbackInvestigation
+} = require('../validators/investigation.schema');
+
 /**
  * AI Service for VULNEX
  * Handles AI-powered vulnerability analysis, root-cause diagnosis,
@@ -27,6 +32,34 @@ class AIService {
 
     // Heuristic fallback analysis when API key is not yet configured
     return this._localAnalysis(finding, codeContext);
+  }
+
+  /**
+   * Process and validate an AI investigation response safely.
+   * If the model output is malformed or invalid, constructs a schema-compliant fallback.
+   * Never throws uncaught exceptions.
+   *
+   * @param {string|object} rawOutput
+   * @param {object} [finding=null]
+   * @returns {object} Safe investigation data
+   */
+  processInvestigationResponse(rawOutput, finding = null) {
+    const parseResult = parseAndValidateAIInvestigation(rawOutput);
+    if (parseResult.success) {
+      return {
+        ...parseResult.data,
+        findingId: finding?.id || 'finding_unknown',
+        modelUsed: this.model,
+        isFallback: false
+      };
+    }
+
+    return createFallbackInvestigation({
+      findingId: finding?.id || 'finding_unknown',
+      reason: `AI output validation failed: ${parseResult.error?.message || 'malformed response'}`,
+      model: this.model,
+      finding
+    });
   }
 
   /**
@@ -184,5 +217,8 @@ Provide the patched code and explanation.`;
   }
 }
 
-module.exports = new AIService();
+const aiService = new AIService();
+aiService.AIService = AIService;
+
+module.exports = aiService;
 
