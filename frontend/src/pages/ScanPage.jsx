@@ -176,7 +176,7 @@ export default function ScanPage() {
         const repo = repoRes.data || repoRes;
         repositoryId = repo.id;
       } else if (targetType === 'FIXTURE') {
-        repositoryId = 'repo_fixture_01';
+        repositoryId = lastTargetRepoId || 'repo_fixture_01';
       }
 
       setLastTargetRepoId(repositoryId);
