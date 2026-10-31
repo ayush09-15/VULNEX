@@ -97,6 +97,23 @@ router.post('/', async (req, res) => {
  * GET /api/scans/:id
  * Retrieve specific scan details with real stage and summary
  */
+/**
+ * GET /api/scans/history
+ * Retrieve historical scan reports summary with tool versions, finding counts,
+ * patch attempts, verification outcomes, and tools/rules breakdown (Commit 47)
+ */
+router.get('/history', (req, res) => {
+  try {
+    const history = reportService.getScanHistory();
+    return apiResponse.success(res, history, 200);
+  } catch (err) {
+    return apiResponse.error(res, {
+      code: 'INTERNAL_SERVER_ERROR',
+      message: err.message
+    }, 500);
+  }
+});
+
 router.get('/:id', (req, res) => {
   try {
     const scan = scanOrchestrator.getScan(req.params.id);
@@ -176,6 +193,43 @@ router.get('/:id/findings', (req, res) => {
  * Retrieve consolidated, evidence-backed security scan report (Commit 41)
  * Acceptance Gate: Tools, findings, AI, patch and checks.
  */
+
+/**
+ * GET /api/scans/:id/export
+ * Export scan report in specified format (json, markdown, sarif, csv) (Commit 47)
+ */
+router.get('/:id/export', (req, res) => {
+  try {
+    const format = req.query.format || 'json';
+    const report = reportService.generateScanReport(req.params.id, {
+      format
+    });
+
+    if (req.query.download === 'true') {
+      const ext = format === 'markdown' ? 'md' : format === 'sarif' ? 'sarif' : format === 'csv' ? 'csv' : 'json';
+      res.setHeader('Content-Disposition', `attachment; filename="vulnex-report-${req.params.id}.${ext}"`);
+      if (format === 'markdown' || format === 'csv') {
+        res.setHeader('Content-Type', report.contentType || 'text/plain');
+        return res.send(report.content);
+      }
+      if (format === 'sarif') {
+        res.setHeader('Content-Type', 'application/sarif+json');
+        return res.json(report.sarif);
+      }
+      res.setHeader('Content-Type', 'application/json');
+      return res.json(report);
+    }
+
+    return apiResponse.success(res, report, 200);
+  } catch (err) {
+    const statusCode = err.statusCode || (err.code === 'RESOURCE_NOT_FOUND' ? 404 : 500);
+    return apiResponse.error(res, {
+      code: err.code || 'REPORT_EXPORT_FAILED',
+      message: err.message
+    }, statusCode);
+  }
+});
+
 router.get('/:id/report', (req, res) => {
   try {
     const report = reportService.generateScanReport(req.params.id, {

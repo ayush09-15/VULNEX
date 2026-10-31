@@ -217,7 +217,7 @@ describe('End-to-End Workflow: Detect -> Investigate -> Patch -> Verify -> Repor
     assert.equal(approvedApplyRes.body.success, true);
     assert.equal(approvedApplyRes.body.data.status, 'APPLIED_TO_TEMP');
     assert.ok(approvedApplyRes.body.data.appliedWorkspaceId.startsWith('ws_disposable_'));
-    assert.ok(approvedApplyRes.body.data.disposableWorkspacePath.includes('.workspaces/ws_disposable_'));
+    assert.ok(approvedApplyRes.body.data.disposableWorkspacePath.replace(/\\/g, '/').includes('.workspaces/ws_disposable_'));
 
     // Check patch review state updated
     const appliedPatchRes = await dispatch('GET', `/api/patches/${patch.id}`);
