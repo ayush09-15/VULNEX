@@ -5,3 +5,4 @@
       "check_id": "broken.json.syntax",
       "path": "src/broken.js",
       "start": { "line": 1,
+
