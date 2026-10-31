@@ -304,6 +304,14 @@ class ScannerService {
     return updated;
   }
 
+  addFinding(finding) {
+    if (!finding || !finding.id) {
+      throw new Error('Finding must have an id');
+    }
+    findingsStore.set(finding.id, finding);
+    return finding;
+  }
+
   deleteScan(scanId) {
     const exists = scansStore.has(scanId);
     if (exists) {
