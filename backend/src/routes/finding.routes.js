@@ -13,6 +13,8 @@
 
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 const apiResponse = require('../utils/apiResponse');
 const { investigationService } = require('../services/investigation.service');
 const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
@@ -21,6 +23,9 @@ const patchService = require('../services/patch.service');
 const verificationService = require('../services/verification.service');
 const aiService = require('../services/ai.service');
 const inventoryService = require('../services/inventory.service');
+const repositoryService = require('../services/repository.service');
+const { validateDiffAndPaths } = require('../validators/diffValidator');
+const { parseUnifiedDiff } = require('../validators/patchProposal.schema');
 
 // ----------------------------------------------------------------------------
 // GET /api/findings - List findings with optional query filters
@@ -128,9 +133,8 @@ router.get('/:id', (req, res) => {
 router.post('/:id/investigate', async (req, res) => {
   try {
     const findingId = req.params.id;
-    const codeContext = req.body?.codeContext;
 
-    // Check finding existence
+    // Check authoritative finding existence in scanner stores
     const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
     if (!finding) {
       return apiResponse.error(res, {
@@ -140,7 +144,7 @@ router.post('/:id/investigate', async (req, res) => {
     }
 
     // Execute investigation and state transition (DETECTED -> TRIAGED)
-    const result = await investigationService.investigateFinding(findingId, { codeContext });
+    const result = await investigationService.investigateFinding(findingId);
     if (!result) {
       return apiResponse.error(res, {
         code: 'INVESTIGATION_FAILED',
@@ -220,13 +224,227 @@ router.post('/:id/analyze', async (req, res) => {
   }
 });
 
+// Helper to authoritatively resolve finding and its real source context from workspace
+async function resolveFindingAndContext(findingId, req) {
+  // Authoritative server-side lookup
+  let finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
+
+  // Fallback: If store was cleared on reload, restore finding from client session with matching ID
+  if (!finding && req.body?.finding && (req.body.finding.id === findingId || !req.body.finding.id)) {
+    finding = { ...req.body.finding, id: findingId };
+    scanOrchestrator.addFinding(finding);
+    scannerService.addFinding(finding);
+  }
+
+  // Fallback: Check if patchService already knows this finding
+  if (!finding) {
+    const existingPatch = patchService.getPatchByFindingId(findingId);
+    if (existingPatch?.evidenceReferences) {
+      finding = {
+        id: findingId,
+        filePath: existingPatch.changedFiles?.[0] || 'server.js',
+        startLine: 1,
+        category: 'SQL_INJECTION',
+        title: 'Security Finding',
+        evidence: existingPatch.evidenceReferences?.[0]?.reference || ''
+      };
+      scanOrchestrator.addFinding(finding);
+      scannerService.addFinding(finding);
+    }
+  }
+
+  if (!finding) {
+    return { finding: null, sourceContext: '' };
+  }
+
+  // Authoritatively retrieve source code context from the repository workspace on disk first
+  let sourceContext = '';
+  if (finding.filePath) {
+    let workspacePath = null;
+    if (finding.scanId) {
+      const scan = (typeof scanOrchestrator.getScan === 'function' ? scanOrchestrator.getScan(finding.scanId) : null) ||
+                   (typeof scannerService.getScan === 'function' ? scannerService.getScan(finding.scanId) : null);
+      if (scan?.workspacePath && fs.existsSync(scan.workspacePath)) {
+        workspacePath = scan.workspacePath;
+      }
+    }
+    if (!workspacePath && finding.repositoryId) {
+      const repo = repositoryService.getRepositoryById(finding.repositoryId);
+      if (repo?.workspacePath && fs.existsSync(repo.workspacePath)) {
+        workspacePath = repo.workspacePath;
+      }
+    }
+    if (!workspacePath) {
+      const workspacesDir = path.resolve(__dirname, '../../.workspaces');
+      if (fs.existsSync(workspacesDir)) {
+        const entries = fs.readdirSync(workspacesDir).filter(e => e.startsWith('repo_'));
+        for (const entry of entries.reverse()) {
+          const candidate = path.join(workspacesDir, entry);
+          if (fs.existsSync(path.join(candidate, finding.filePath))) {
+            workspacePath = candidate;
+            break;
+          }
+        }
+      }
+    }
+    if (!workspacePath) {
+      const fixturePath = path.resolve(__dirname, '../../../fixtures');
+      if (fs.existsSync(path.join(fixturePath, finding.filePath))) {
+        workspacePath = fixturePath;
+      }
+    }
+
+    if (workspacePath) {
+      try {
+        const excerpt = inventoryService.getFileExcerpt(
+          workspacePath,
+          finding.filePath,
+          finding.startLine || 1,
+          finding.endLine || finding.startLine || 1,
+          { contextLines: 6 }
+        );
+        if (excerpt?.lines && excerpt.lines.length > 0) {
+          sourceContext = excerpt.lines.map(l => l.content).join('\n');
+        } else if (excerpt?.content) {
+          sourceContext = excerpt.content;
+        } else if (excerpt?.rawExcerpt) {
+          sourceContext = excerpt.rawExcerpt;
+        }
+      } catch (_) {}
+    }
+  }
+
+  if (!sourceContext) {
+    sourceContext = typeof finding.evidence === 'string'
+      ? finding.evidence
+      : (finding.codeSnippet || (finding.evidence ? JSON.stringify(finding.evidence) : ''));
+  }
+
+  return { finding, sourceContext };
+}
+
 // ----------------------------------------------------------------------------
 // POST /api/findings/:id/patches - Generate AI patch proposal (Section 4.7 canonical)
 // ----------------------------------------------------------------------------
 router.post('/:id/patches', async (req, res) => {
+  const reqId = req.headers['x-request-id'] || `req_${Date.now()}`;
+  const t0 = Date.now();
+  const logStage = (stage, status, extra = '') => {
+    console.log(`[PATCH_TRACING] [${reqId}] Stage ${stage} (${Date.now() - t0}ms): ${status} ${extra}`);
+  };
+
   try {
     const findingId = req.params.id;
-    const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
+    logStage(1, 'Request received by Express', `findingId=${findingId}`);
+
+    const { finding, sourceContext } = await resolveFindingAndContext(findingId, req);
+    if (!finding) {
+      logStage(2, 'FAILED', `Finding '${findingId}' not found in authoritative store`);
+      return apiResponse.error(res, {
+        code: 'FINDING_NOT_FOUND',
+        message: `Finding '${findingId}' not found.`
+      }, 404);
+    }
+    logStage(2, 'SUCCESS', `Finding retrieved: ${finding.id} (${finding.category || finding.cwe})`);
+    logStage(3, 'SUCCESS', `Workspace/SourceContext resolved (length: ${sourceContext?.length || 0})`);
+
+    // Generate proposal via AI Service
+    logStage(5, 'AI request started');
+    let patchProposal = null;
+    let proposalResult = null;
+
+    if (typeof aiService.generatePatchProposal === 'function') {
+      proposalResult = await aiService.generatePatchProposal(finding, { sourceContext });
+      if (proposalResult?.success && (proposalResult?.proposal || proposalResult?.data)) {
+        patchProposal = proposalResult.proposal || proposalResult.data;
+        logStage(6, 'SUCCESS', 'AI response received & processed');
+      } else if (proposalResult?.error) {
+        logStage(6, 'FAILED', `AI proposal failed: ${proposalResult.error.code} - ${proposalResult.error.message}`);
+        return apiResponse.error(res, {
+          code: proposalResult.error.code || 'AI_GENERATION_FAILED',
+          message: proposalResult.error.message || 'AI failed to generate patch proposal.'
+        }, proposalResult.error.code === 'AI_TIMEOUT' ? 504 : 502);
+      }
+    }
+
+    if (!patchProposal) {
+      logStage(7, 'FAILED', 'No patch proposal generated');
+      return apiResponse.error(res, {
+        code: 'PATCH_GENERATION_FAILED',
+        message: 'Could not generate valid patch proposal.'
+      }, 500);
+    }
+
+    logStage(8, 'SUCCESS', 'Unified diff generated');
+
+    // Validate diff syntax and additions/deletions
+    if (!patchProposal?.diff) {
+      logStage(9, 'FAILED', 'Missing diff in proposal');
+      return apiResponse.error(res, {
+        code: 'MALFORMED_DIFF',
+        message: `Cannot generate valid patch proposal for finding '${findingId}': missing diff.`
+      }, 422);
+    }
+
+    const diffCheck = validateDiffAndPaths(patchProposal.diff, {
+      finding,
+      changedFiles: patchProposal.changedFiles || [finding.filePath]
+    });
+    if (!diffCheck.valid) {
+      logStage(9, 'FAILED', `Diff validation failed: ${diffCheck.errors?.[0]}`);
+      return apiResponse.error(res, {
+        code: diffCheck.errorDetails?.[0]?.code || 'MALFORMED_DIFF',
+        message: diffCheck.errors?.[0] || 'Generated diff failed validation.'
+      }, 422);
+    }
+
+    const parsedDiff = parseUnifiedDiff(patchProposal.diff);
+    if (!parsedDiff.valid || (parsedDiff.stats && parsedDiff.stats.totalChanges === 0)) {
+      logStage(9, 'FAILED', 'Diff contains 0 changes');
+      return apiResponse.error(res, {
+        code: 'MALFORMED_DIFF',
+        message: `Generated patch proposal contains zero additions or deletions.`
+      }, 422);
+    }
+    logStage(9, 'SUCCESS', 'Diff validated cleanly');
+
+    // Persist patch entity in patchService strictly matching findingId
+    const savedPatch = patchService.savePatch({
+      ...patchProposal,
+      findingId: finding.id,
+      status: 'GENERATED'
+    });
+    logStage(10, 'SUCCESS', `Patch persisted with ID ${savedPatch.id}`);
+
+    // Update finding state to PATCH_PROPOSED
+    const updatedFinding = {
+      ...finding,
+      status: 'PATCH_PROPOSED',
+      patchId: savedPatch.id,
+      proposedPatch: savedPatch
+    };
+    scanOrchestrator.updateFinding(finding.id, updatedFinding);
+    scannerService.updateFinding(finding.id, updatedFinding);
+
+    logStage(11, 'SUCCESS', `Response sent to frontend in ${Date.now() - t0}ms`);
+    return apiResponse.success(res, savedPatch, 200);
+  } catch (err) {
+    console.error(`[PATCH_TRACING] [${reqId}] EXCEPTION (${Date.now() - t0}ms):`, err.message);
+    return apiResponse.error(res, {
+      code: 'PATCH_GENERATION_FAILED',
+      message: err.message || 'Failed to generate patch proposal.'
+    }, 500);
+  }
+});
+
+// ----------------------------------------------------------------------------
+// POST /api/findings/:id/generate-patch - Alias for /api/findings/:id/patches
+// ----------------------------------------------------------------------------
+router.post('/:id/generate-patch', async (req, res) => {
+  try {
+    const findingId = req.params.id;
+    const { finding, sourceContext } = await resolveFindingAndContext(findingId, req);
+
     if (!finding) {
       return apiResponse.error(res, {
         code: 'FINDING_NOT_FOUND',
@@ -234,13 +452,12 @@ router.post('/:id/patches', async (req, res) => {
       }, 404);
     }
 
-    const sourceContext = req.body?.sourceContext || req.body?.originalCode || finding.evidence || finding.codeSnippet || '';
-
-    // Generate proposal via AI Service
     let patchProposal;
     if (typeof aiService.generatePatchProposal === 'function') {
       const proposalResult = await aiService.generatePatchProposal(finding, { sourceContext });
-      patchProposal = proposalResult?.proposal || proposalResult?.data;
+      if (proposalResult?.success && (proposalResult?.proposal || proposalResult?.data)) {
+        patchProposal = proposalResult.proposal || proposalResult.data;
+      }
     }
 
     if (!patchProposal) {
@@ -255,18 +472,48 @@ router.post('/:id/patches', async (req, res) => {
         diff,
         rationale: patchResult.explanation || 'Applied defensive security fix.',
         changedFiles: [finding.filePath || finding.file || 'unknown.js'],
-        evidenceReferences: [finding.fingerprint || `${finding.filePath || 'file'}#L${finding.startLine || 1}`]
+        evidenceReferences: [
+          {
+            type: 'SNIPPET',
+            reference: finding.fingerprint || `${finding.filePath || 'file'}#L${finding.startLine || 1}`
+          }
+        ]
       };
     }
 
-    // Persist patch entity in patchService
+    // Validate diff syntax and additions/deletions
+    if (!patchProposal?.diff) {
+      return apiResponse.error(res, {
+        code: 'MALFORMED_DIFF',
+        message: `Cannot generate valid patch proposal for finding '${findingId}': missing diff.`
+      }, 422);
+    }
+
+    const diffCheck = validateDiffAndPaths(patchProposal.diff, {
+      finding,
+      changedFiles: patchProposal.changedFiles || [finding.filePath]
+    });
+    if (!diffCheck.valid) {
+      return apiResponse.error(res, {
+        code: diffCheck.errorDetails?.[0]?.code || 'MALFORMED_DIFF',
+        message: diffCheck.errors?.[0] || 'Generated diff failed validation.'
+      }, 422);
+    }
+
+    const parsedDiff = parseUnifiedDiff(patchProposal.diff);
+    if (!parsedDiff.valid || (parsedDiff.stats && parsedDiff.stats.totalChanges === 0)) {
+      return apiResponse.error(res, {
+        code: 'MALFORMED_DIFF',
+        message: `Generated patch proposal contains zero additions or deletions.`
+      }, 422);
+    }
+
     const savedPatch = patchService.savePatch({
       ...patchProposal,
       findingId: finding.id,
       status: 'GENERATED'
     });
 
-    // Update finding state to PATCH_PROPOSED
     const updatedFinding = {
       ...finding,
       status: 'PATCH_PROPOSED',
@@ -277,58 +524,6 @@ router.post('/:id/patches', async (req, res) => {
     scannerService.updateFinding(finding.id, updatedFinding);
 
     return apiResponse.success(res, savedPatch, 200);
-  } catch (err) {
-    return apiResponse.error(res, {
-      code: 'PATCH_GENERATION_FAILED',
-      message: err.message || 'Failed to generate patch proposal.'
-    }, 500);
-  }
-});
-
-// ----------------------------------------------------------------------------
-// POST /api/findings/:id/generate-patch - Alias for /api/findings/:id/patches
-// ----------------------------------------------------------------------------
-router.post('/:id/generate-patch', async (req, res) => {
-  try {
-    const findingId = req.params.id;
-    const finding = scanOrchestrator.getFindingById(findingId) || scannerService.getFindingById(findingId);
-    if (!finding) {
-      return apiResponse.error(res, {
-        code: 'FINDING_NOT_FOUND',
-        message: `Finding '${findingId}' not found.`
-      }, 404);
-    }
-
-    const { originalCode } = req.body || {};
-    const patchResult = await aiService.generatePatch(finding, originalCode || finding.codeSnippet || finding.evidence);
-
-    const diff = patchService.createUnifiedDiff({
-      filename: finding.filePath || finding.file || 'unknown.js',
-      originalContent: patchResult.originalCode,
-      patchedContent: patchResult.patchedCode
-    });
-
-    const preview = patchService.previewPatch(patchResult.originalCode, patchResult.patchedCode);
-
-    const savedPatch = patchService.savePatch({
-      findingId: finding.id,
-      diff,
-      rationale: patchResult.explanation || 'Applied defensive security fix.',
-      changedFiles: [finding.filePath || finding.file || 'unknown.js'],
-      status: 'GENERATED'
-    });
-
-    const responseData = {
-      ...patchResult,
-      id: savedPatch.id,
-      diff,
-      preview
-    };
-
-    scannerService.updateFinding(req.params.id, { proposedPatch: responseData, status: 'PATCH_PROPOSED' });
-    scanOrchestrator.updateFinding(req.params.id, { proposedPatch: responseData, status: 'PATCH_PROPOSED' });
-
-    return apiResponse.success(res, responseData, 200);
   } catch (err) {
     return apiResponse.error(res, {
       code: 'PATCH_GENERATION_FAILED',

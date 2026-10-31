@@ -147,7 +147,7 @@ export default function FindingsPage() {
 
   const handleNavigateToPatch = (finding) => {
     setSelectedFinding(null);
-    navigate('/remediation', { state: { finding } });
+    navigate('/remediation', { state: { finding, autoGenerate: true } });
   };
 
   const filteredFindings = useMemo(() => {

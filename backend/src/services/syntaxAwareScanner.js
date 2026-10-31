@@ -216,12 +216,14 @@ function checkSqlInjection(codeLine, fullContent) {
     return false; // Safely parameterized
   }
 
-  // Require evidence of an actual database execution sink (on this line or in the file)
+  // Require evidence of an actual database execution sink or untrusted request source (on this line or in the file)
   const hasDbSink = (
     /(?:db|client|pool|conn|connection|knex|sequelize|prisma|sqlite|mysql|pg)\.(?:query|execute|raw|\$queryRaw)\s*\(/i.test(codeLine) ||
+    /\b(?:query|execute|raw)\s*\(/i.test(codeLine) ||
     (typeof fullContent === 'string' && (
       /(?:db|client|pool|conn|connection|knex|sequelize|prisma|sqlite|mysql|pg)\.(?:query|execute|raw|\$queryRaw)\s*\(/i.test(fullContent) ||
-      /\b(?:query|execute|raw)\s*\(\s*(?:sql|query|[a-zA-Z0-9_]*query)/i.test(fullContent)
+      /\b(?:query|execute|raw)\s*\(\s*(?:sql|query|[a-zA-Z0-9_]*query)/i.test(fullContent) ||
+      /\breq\.(?:query|params|body|headers)\b/i.test(fullContent)
     ))
   );
 

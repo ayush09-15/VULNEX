@@ -9,9 +9,12 @@
  */
 
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 const aiService = require('./ai.service');
 const { scanOrchestrator } = require('../orchestrator/scanOrchestrator');
 const scannerService = require('./scanner.service');
+const repositoryService = require('./repository.service');
 const { getFileExcerpt } = require('./inventory.service');
 const {
   validateInvestigation,
@@ -137,22 +140,58 @@ class InvestigationService {
       return null;
     }
 
-    // 2. Resolve code context (options -> workspace excerpt -> finding evidence)
-    let codeContext = options.codeContext || '';
+    // 2. Resolve authoritative code context directly from workspace repository
+    let codeContext = '';
 
-    if (!codeContext && finding.scanId && finding.filePath) {
-      const scan = (typeof scanOrchestrator.getScan === 'function' ? scanOrchestrator.getScan(finding.scanId) : null) ||
-                   (typeof scannerService.getScan === 'function' ? scannerService.getScan(finding.scanId) : null);
-      if (scan && scan.workspacePath) {
+    if (finding.filePath) {
+      let workspacePath = null;
+      if (finding.scanId) {
+        const scan = (typeof scanOrchestrator.getScan === 'function' ? scanOrchestrator.getScan(finding.scanId) : null) ||
+                     (typeof scannerService.getScan === 'function' ? scannerService.getScan(finding.scanId) : null);
+        if (scan?.workspacePath && fs.existsSync(scan.workspacePath)) {
+          workspacePath = scan.workspacePath;
+        }
+      }
+      if (!workspacePath && finding.repositoryId) {
+        const repo = repositoryService.getRepositoryById(finding.repositoryId);
+        if (repo?.workspacePath && fs.existsSync(repo.workspacePath)) {
+          workspacePath = repo.workspacePath;
+        }
+      }
+      if (!workspacePath) {
+        const workspacesDir = path.resolve(__dirname, '../../.workspaces');
+        if (fs.existsSync(workspacesDir)) {
+          const entries = fs.readdirSync(workspacesDir).filter(e => e.startsWith('repo_'));
+          for (const entry of entries.reverse()) {
+            const candidate = path.join(workspacesDir, entry);
+            if (fs.existsSync(path.join(candidate, finding.filePath))) {
+              workspacePath = candidate;
+              break;
+            }
+          }
+        }
+      }
+      if (!workspacePath) {
+        const fixturePath = path.resolve(__dirname, '../../../fixtures');
+        if (fs.existsSync(path.join(fixturePath, finding.filePath))) {
+          workspacePath = fixturePath;
+        }
+      }
+
+      if (workspacePath) {
         try {
           const excerptResult = getFileExcerpt(
-            scan.workspacePath,
+            workspacePath,
             finding.filePath,
             finding.startLine || 1,
             finding.endLine || finding.startLine || 1,
             { contextLines: 5 }
           );
-          codeContext = excerptResult?.excerpt || '';
+          if (excerptResult?.lines && excerptResult.lines.length > 0) {
+            codeContext = excerptResult.lines.map(l => l.content).join('\n');
+          } else if (excerptResult?.rawExcerpt) {
+            codeContext = excerptResult.rawExcerpt;
+          }
         } catch {
           // If workspace file read fails, smoothly fall back to finding.evidence
         }

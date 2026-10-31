@@ -34,7 +34,7 @@ const BASE_URL =
 
 const axiosInstance = axios.create({
   baseURL: BASE_URL,
-  timeout: 30000,
+  timeout: 60000,
   headers: {
     'Accept': 'application/json',
   },
@@ -216,8 +216,8 @@ export const vulnexApi = {
       const res = await axiosInstance.post(`/findings/${encodeURIComponent(id)}/investigate`);
       return res.data;
     },
-    generatePatch: async (id) => {
-      const res = await axiosInstance.post(`/findings/${encodeURIComponent(id)}/patches`);
+    generatePatch: async (id, payload = {}) => {
+      const res = await axiosInstance.post(`/findings/${encodeURIComponent(id)}/patches`, payload);
       return res.data;
     },
   },

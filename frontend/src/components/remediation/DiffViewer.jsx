@@ -16,6 +16,7 @@ import { parseUnifiedDiff } from '../../utils/diffParser';
 
 export default function DiffViewer({
   patch,
+  targetFindingId,
   onApprove,
   onReject,
   onApply,
@@ -28,6 +29,10 @@ export default function DiffViewer({
 
   const diffText = patch?.diff || '';
   const parsed = useMemo(() => parseUnifiedDiff(diffText), [diffText]);
+
+  const hasFindingMismatch = Boolean(
+    targetFindingId && patch?.findingId && targetFindingId !== patch.findingId
+  );
 
   const reviewState = patch?.reviewState || 'PENDING_REVIEW';
   const isApproved = reviewState === 'APPROVED';
@@ -123,6 +128,16 @@ export default function DiffViewer({
           )}
         </div>
       </div>
+
+      {/* Invariant Check: Finding Association */}
+      {hasFindingMismatch && (
+        <div className="p-3.5 rounded-xl bg-red-950/60 border border-red-800 text-red-300 text-xs flex items-center gap-2.5">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+          <span>
+            <strong>Invariant Mismatch:</strong> Active target finding is <code className="bg-red-900/60 px-1 py-0.5 rounded text-white font-mono">{targetFindingId}</code>, but this patch was generated for finding <code className="bg-red-900/60 px-1 py-0.5 rounded text-white font-mono">{patch?.findingId}</code>. Patch approval and application are disabled.
+          </span>
+        </div>
+      )}
 
       {/* 2. Gate Metrics & Affected Files */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -294,7 +309,7 @@ export default function DiffViewer({
                   <button
                     type="button"
                     onClick={handleApprove}
-                    disabled={isLoading || !parsed.valid}
+                    disabled={isLoading || !parsed.valid || stats.totalChanges === 0 || hasFindingMismatch}
                     className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-semibold shadow-md transition-all cursor-pointer"
                   >
                     <CheckCircle2 className="w-4 h-4" />
@@ -316,7 +331,7 @@ export default function DiffViewer({
                 <button
                   type="button"
                   onClick={handleApply}
-                  disabled={isLoading}
+                  disabled={isLoading || hasFindingMismatch}
                   className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold shadow-lg shadow-cyan-950 transition-all cursor-pointer"
                 >
                   <ShieldCheck className="w-4 h-4" />
