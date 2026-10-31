@@ -247,11 +247,12 @@ class PatchService {
    * @param {Object} options
    * @returns {string} Unified diff format
    */
-  createUnifiedDiff({ filename = 'file.js', originalContent = '', patchedContent = '' }) {
+  createUnifiedDiff({ filename = 'file.js', originalContent = '', patchedContent = '', startLine = 1 }) {
     const origLines = originalContent.split('\n');
     const patchLines = patchedContent.split('\n');
+    const effectiveStart = Math.max(1, parseInt(startLine, 10) || 1);
 
-    let diff = `--- a/${filename}\n+++ b/${filename}\n@@ -1,${origLines.length} +1,${patchLines.length} @@\n`;
+    let diff = `--- a/${filename}\n+++ b/${filename}\n@@ -${effectiveStart},${origLines.length} +${effectiveStart},${patchLines.length} @@\n`;
 
     const max = Math.max(origLines.length, patchLines.length);
     for (let i = 0; i < max; i++) {

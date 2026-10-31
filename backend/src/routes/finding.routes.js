@@ -213,12 +213,18 @@ router.post('/:id/patches', async (req, res) => {
       patchProposal = proposalResult?.proposal || proposalResult?.data;
     }
 
+    if (!patchProposal && typeof aiService._localPatchProposal === 'function') {
+      const localResult = aiService._localPatchProposal(finding, sourceContext);
+      patchProposal = localResult?.proposal || localResult?.data;
+    }
+
     if (!patchProposal) {
       const patchResult = await aiService.generatePatch(finding, sourceContext);
       const diff = patchService.createUnifiedDiff({
         filename: finding.filePath || finding.file || 'unknown.js',
         originalContent: patchResult.originalCode,
-        patchedContent: patchResult.patchedCode
+        patchedContent: patchResult.patchedCode,
+        startLine: finding.startLine || 1
       });
       patchProposal = {
         findingId: finding.id,
