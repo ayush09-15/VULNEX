@@ -5,6 +5,8 @@ const { URL } = require('url');
 const { isPrivateOrBlockedHost } = require('../utils/ssrfGuard');
 const inventoryService = require('./inventory.service');
 const zipService = require('./zip.service');
+const processRunner = require('../utils/processRunner');
+const config = require('../config/env');
 
 /**
  * ============================================================================
@@ -209,15 +211,163 @@ function registerRepository({ sourceType, displayName, sourceUrl, defaultRef = '
 }
 
 /**
- * Ingest and validate a ZIP archive
+ * Ingest and validate a ZIP archive into an isolated workspace directory
  * @param {Buffer} zipBuffer
  * @param {Object} options
  * @returns {Object}
  */
 function ingestZipArchive(zipBuffer, options = {}) {
-  const result = zipService.ingestZipArchive(zipBuffer, options);
-  repositoriesStore.set(result.repository.id, result.repository);
-  return result.repository;
+  const repoId = `repo_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const targetWorkspace = path.resolve(config.workspaceRoot || path.resolve(__dirname, '../../../.workspaces'), repoId);
+  fs.mkdirSync(targetWorkspace, { recursive: true });
+
+  zipService.extractZipArchive(zipBuffer, targetWorkspace, options);
+
+  const displayName = (options.displayName || `upload-${Date.now()}`).replace(/[/\\~]/g, '').trim() || 'unnamed-repo';
+  const record = {
+    id: repoId,
+    sourceType: 'ZIP_UPLOAD',
+    displayName,
+    sanitizedSourceUrl: null,
+    defaultRef: options.defaultRef || 'main',
+    createdAt: new Date().toISOString(),
+    ownerId: options.ownerId || null,
+    workspacePath: targetWorkspace
+  };
+
+  repositoriesStore.set(repoId, record);
+  return record;
+}
+
+/**
+ * Prepares an isolated filesystem workspace for a repository
+ * - LOCAL_FIXTURE: Points to verified fixture directory
+ * - ZIP_UPLOAD: Points to extracted workspace
+ * - GITHUB: Clones via git CLI into .workspaces/<repositoryId>
+ * 
+ * @param {string} repositoryId
+ * @param {Object} [options={}]
+ * @param {string} [options.ref]
+ * @returns {Promise<string>} Absolute path to workspace directory
+ */
+async function prepareWorkspace(repositoryId, options = {}) {
+  let repo = getRepositoryById(repositoryId);
+
+  // If repo is the default fixture or not found but matches default fixture ID
+  if (!repo && repositoryId === defaultFixtureId) {
+    repo = {
+      id: defaultFixtureId,
+      sourceType: 'LOCAL_FIXTURE',
+      displayName: 'intentionally-vulnerable-node-app',
+      sanitizedSourceUrl: 'fixtures/intentionally-vulnerable-node-app',
+      defaultRef: 'main',
+      createdAt: '2026-10-31T03:00:00.000Z',
+      ownerId: null,
+      workspacePath: fs.existsSync(defaultFixturePath) ? defaultFixturePath : './fixtures'
+    };
+    repositoriesStore.set(defaultFixtureId, repo);
+  }
+
+  if (!repo) {
+    const err = new Error(`Repository with ID "${repositoryId}" not found.`);
+    err.code = 'RESOURCE_NOT_FOUND';
+    err.statusCode = 404;
+    throw err;
+  }
+
+  // Handle LOCAL_FIXTURE
+  if (repo.sourceType === 'LOCAL_FIXTURE') {
+    const fixturePath = repo.workspacePath && fs.existsSync(repo.workspacePath)
+      ? repo.workspacePath
+      : (fs.existsSync(defaultFixturePath) ? defaultFixturePath : path.resolve(__dirname, '../../../fixtures'));
+    
+    if (!fs.existsSync(fixturePath)) {
+      const err = new Error(`Fixture directory not found at: ${fixturePath}`);
+      err.code = 'WORKSPACE_ERROR';
+      throw err;
+    }
+    repo.workspacePath = fixturePath;
+    return fixturePath;
+  }
+
+  // Handle ZIP_UPLOAD
+  if (repo.sourceType === 'ZIP_UPLOAD') {
+    if (repo.workspacePath && fs.existsSync(repo.workspacePath)) {
+      return repo.workspacePath;
+    }
+    const err = new Error(`Workspace for uploaded archive "${repo.displayName}" does not exist on disk.`);
+    err.code = 'WORKSPACE_ERROR';
+    throw err;
+  }
+
+  // Handle GITHUB
+  if (repo.sourceType === 'GITHUB') {
+    // If workspace already exists and has files, reuse it
+    if (repo.workspacePath && fs.existsSync(repo.workspacePath)) {
+      try {
+        const entries = fs.readdirSync(repo.workspacePath);
+        if (entries.length > 0) {
+          return repo.workspacePath;
+        }
+      } catch (_) {}
+    }
+
+    const workspacesBase = config.workspaceRoot || path.resolve(__dirname, '../../../.workspaces');
+    const targetWorkspace = path.resolve(workspacesBase, repo.id);
+    fs.mkdirSync(path.dirname(targetWorkspace), { recursive: true });
+
+    // If directory exists and is non-empty, use it
+    if (fs.existsSync(targetWorkspace)) {
+      try {
+        const entries = fs.readdirSync(targetWorkspace);
+        if (entries.length > 0) {
+          repo.workspacePath = targetWorkspace;
+          repositoriesStore.set(repo.id, repo);
+          return targetWorkspace;
+        }
+      } catch (_) {}
+    }
+
+    const targetRef = options.ref || repo.defaultRef || 'main';
+
+    // 1. Attempt shallow clone with specific ref
+    let cloneResult = await processRunner.run('git', [
+      'clone',
+      '--depth', '1',
+      '--single-branch',
+      '--branch', targetRef,
+      repo.sanitizedSourceUrl,
+      targetWorkspace
+    ], { timeoutMs: 60000 });
+
+    // 2. If branch-specific clone failed (e.g. default branch is master, not main), clone default branch
+    if (cloneResult.exitCode !== 0) {
+      cloneResult = await processRunner.run('git', [
+        'clone',
+        '--depth', '1',
+        repo.sanitizedSourceUrl,
+        targetWorkspace
+      ], { timeoutMs: 60000 });
+    }
+
+    if (cloneResult.exitCode !== 0) {
+      if (fs.existsSync(targetWorkspace)) {
+        try { fs.rmSync(targetWorkspace, { recursive: true, force: true }); } catch (_) {}
+      }
+      const rawError = (cloneResult.stderr || cloneResult.stdout || 'git clone process exited with non-zero code').trim();
+      const err = new Error(`Failed to clone remote repository from "${repo.sanitizedSourceUrl}": ${rawError}`);
+      err.code = 'WORKSPACE_ERROR';
+      throw err;
+    }
+
+    repo.workspacePath = targetWorkspace;
+    repositoriesStore.set(repo.id, repo);
+    return targetWorkspace;
+  }
+
+  const err = new Error(`Unsupported repository sourceType: "${repo.sourceType}"`);
+  err.code = 'WORKSPACE_ERROR';
+  throw err;
 }
 
 /**
@@ -280,7 +430,8 @@ function _resetStore() {
     sanitizedSourceUrl: null,
     defaultRef: 'main',
     createdAt: '2026-10-31T03:00:00.000Z',
-    ownerId: null
+    ownerId: null,
+    workspacePath: fs.existsSync(defaultFixturePath) ? defaultFixturePath : './fixtures'
   });
 }
 
@@ -290,6 +441,7 @@ module.exports = {
   validateGitHubUrl,
   registerRepository,
   ingestZipArchive,
+  prepareWorkspace,
   getRepositoryById,
   listRepositories,
   deleteRepository,

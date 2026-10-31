@@ -174,9 +174,12 @@ class ScannerService {
             scanRecord.status = 'COMPLETED';
           }
         } else {
-          // Sample findings if no path specified
-          findings = this.generateSampleFindings(scanId);
-          scanRecord.status = 'COMPLETED';
+          // If no path specified or workspace missing, fail with WORKSPACE_NOT_FOUND error (never substitute mock findings)
+          findings = [];
+          errors = [`Workspace directory not found: ${repositoryPath || 'unspecified'}`];
+          scanRecord.status = 'FAILED';
+          scanRecord.stage = 'FAILED';
+          scanRecord.errorCode = 'WORKSPACE_NOT_FOUND';
         }
 
         // Attach scanId and store findings

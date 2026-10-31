@@ -5,6 +5,7 @@ const { ScanStateMachine, SCAN_STATES, isTerminalState } = require('./scanStateM
 const inventoryService = require('../services/inventory.service');
 const { semgrepService } = require('../services/semgrep.service');
 const npmAuditService = require('../services/npmAudit.service');
+const repositoryService = require('../services/repository.service');
 const { validateFinding, validateScan } = require('../validators/canonical.schema');
 
 /**
@@ -217,6 +218,7 @@ class ScanOrchestrator {
     this.semgrep = semgrepService;
     this.npmAudit = npmAuditService;
     this.inventory = inventoryService;
+    this.repositoryService = repositoryService;
   }
 
   /**
@@ -225,7 +227,7 @@ class ScanOrchestrator {
    * 
    * @param {Object} input
    * @param {string} input.repositoryId - Associated repository ID
-   * @param {string} input.repositoryPath - Absolute or relative path to workspace
+   * @param {string} [input.repositoryPath] - Absolute or relative path to workspace
    * @param {string} [input.ref='main'] - Git branch/tag/ref
    * @param {Array<string>} [input.scanners=['semgrep', 'npm-audit', 'patterns']] - Target scanner engines
    * @param {Object} [options={}]
@@ -235,7 +237,7 @@ class ScanOrchestrator {
    */
   async startScan(input, options = {}) {
     const repositoryId = input.repositoryId || 'repo_default';
-    const repositoryPath = input.repositoryPath || './';
+    const repositoryPath = input.repositoryPath || null;
     const ref = input.ref || 'main';
     const configuredScanners = Array.isArray(input.scanners) && input.scanners.length > 0
       ? input.scanners
@@ -256,7 +258,8 @@ class ScanOrchestrator {
       startedAt: null,
       completedAt: null,
       errorCode: null,
-      workspaceId: options.workspaceId || path.basename(repositoryPath),
+      workspaceId: options.workspaceId || (repositoryPath ? path.basename(repositoryPath) : repositoryId),
+      workspacePath: repositoryPath || null,
       createdAt: new Date().toISOString(),
       events: [],
       summary: {
@@ -284,10 +287,31 @@ class ScanOrchestrator {
         scanRecord.startedAt = new Date().toISOString();
         recordEvent(scanRecord, SCAN_STATES.PREPARING, 'IN_PROGRESS', 'Validating workspace and inspecting source tree');
 
-        const resolvedWorkspace = path.resolve(repositoryPath);
+        let targetWorkspace = repositoryPath;
+        if (!targetWorkspace && repositoryId) {
+          try {
+            targetWorkspace = await this.repositoryService.prepareWorkspace(repositoryId, { ref });
+          } catch (prepErr) {
+            const errorMsg = `Workspace preparation failed: ${prepErr.message}`;
+            recordEvent(scanRecord, SCAN_STATES.PREPARING, 'FAILED', errorMsg);
+            stateMachine.fail('WORKSPACE_ERROR', errorMsg);
+            scanRecord.status = SCAN_STATES.FAILED;
+            scanRecord.stage = SCAN_STATES.FAILED;
+            scanRecord.errorCode = 'WORKSPACE_ERROR';
+            scanRecord.completedAt = new Date().toISOString();
+            return scanRecord;
+          }
+        }
 
-        if (!fs.existsSync(resolvedWorkspace)) {
-          const errorMsg = `Workspace path does not exist: ${resolvedWorkspace}`;
+        const resolvedWorkspace = targetWorkspace ? path.resolve(targetWorkspace) : null;
+        const serverRoot = path.resolve(__dirname, '../../');
+        const projectRoot = path.resolve(__dirname, '../../../');
+        const isServerRoot = resolvedWorkspace && (resolvedWorkspace === serverRoot || resolvedWorkspace === projectRoot);
+
+        if (!resolvedWorkspace || !fs.existsSync(resolvedWorkspace) || (isServerRoot && !options.allowServerRoot)) {
+          const errorMsg = !resolvedWorkspace || !fs.existsSync(resolvedWorkspace)
+            ? `Workspace path does not exist: ${resolvedWorkspace || 'undefined'}`
+            : 'Access denied: Scanning the VULNEX application root is prohibited by repository isolation policy.';
           recordEvent(scanRecord, SCAN_STATES.PREPARING, 'FAILED', errorMsg);
           stateMachine.fail('WORKSPACE_NOT_FOUND', errorMsg);
           scanRecord.status = SCAN_STATES.FAILED;
@@ -296,6 +320,9 @@ class ScanOrchestrator {
           scanRecord.completedAt = new Date().toISOString();
           return scanRecord;
         }
+
+        scanRecord.workspaceId = options.workspaceId || path.basename(resolvedWorkspace);
+        scanRecord.workspacePath = resolvedWorkspace;
 
         let inventory;
         try {
